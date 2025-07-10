@@ -223,7 +223,6 @@ def clean_and_categorize_elements(raw_pdf_elements, min_meaningful_text_length=1
     
     return texts, tables, images_raw, headers_raw, titles_raw, footers_raw, figure_captions_raw, list_items_raw
 
-def semantic_chunk_texts(texts, embedding_model, n_clusters=30):
     """
     Semantically chunk the cleaned text into coherent groups using embeddings and clustering.
     Returns a list of merged, semantically coherent text chunks.
@@ -306,22 +305,28 @@ def is_decorative_image(image_path, min_area=500, extreme_ratio=3.6):
         pass
     return False
 
-def summarize_elements(texts, tables, images_raw, raw_pdf_elements=None):
+def summarize_texts(texts):
     """
-    Summarizes text, table, and relevant image elements using Ollama models.
-    Also performs an image relevance check to filter out irrelevant images before summarization.
-    For images, both the image and its LLM-generated summary are embedded separately for multi-modal retrieval.
-    
-    Returns:
-        tuple: (text_summaries, table_summaries, image_paths, relevant_images, image_summaries)
+    Summarizes text elements using Ollama models.
+    Returns a list of summaries.
     """
     model = ChatOllama(model="llama3.2:3b")
-    prompt_text_summary = "You are an assistant tasked with concisely summarizing text sections related to veterinary advice and pet care. Focus on key information, main ideas, and any actionable advice. Just give me the summary, be concise and do not be verbose. Text chunk: {element} "
+    prompt_text_summary = (
+        "You are an assistant tasked with concisely summarizing text sections related to veterinary advice and pet care. "
+        "Focus on key information, main ideas, and any actionable advice. Just give me the summary, be concise and do not be verbose. Text chunk: {element} "
+    )
     prompt_text = ChatPromptTemplate.from_template(prompt_text_summary)
     text_summarize_chain = {"element": lambda x: x} | prompt_text | model | StrOutputParser()
-    # Enrich table context if not already done
+    return text_summarize_chain.batch(texts, {"max_concurrency": 8})
+
+def summarize_tables(tables, raw_pdf_elements=None):
+    """
+    Summarizes table elements using Ollama models, enriching context if raw_pdf_elements is provided.
+    Returns a list of table summaries.
+    """
     if raw_pdf_elements is not None and tables and hasattr(tables[0], 'context'):
         enrich_table_context(tables, raw_pdf_elements, window_size=1)
+    model = ChatOllama(model="llama3.2:3b")
     prompt_table_summary = (
         "You are an assistant tasked with extracting key information, trends, and important numerical data from the provided table, "
         "especially as it relates to veterinary topics, animal health, or clinical practice. Use the provided context to help interpret the table. "
@@ -340,13 +345,14 @@ def summarize_elements(texts, tables, images_raw, raw_pdf_elements=None):
     for tbl in tables:
         context = getattr(tbl, 'context', "")
         table_context_pairs.append({"element": tbl.text if hasattr(tbl, 'text') else tbl, "context": context})
-    text_summaries = text_summarize_chain.batch(texts, {"max_concurrency": 8})
-    table_summaries = table_summarize_chain.batch(table_context_pairs, {"max_concurrency": 8})
-    print("Texts and Tables Summary Done!")
-    
-    # Image Handling, filtering out irrelevant imgs
+    return table_summarize_chain.batch(table_context_pairs, {"max_concurrency": 8})
+
+def check_image_relevancy(images_raw):
+    """
+    Filters images using is_decorative_image and LLM-based relevance check.
+    Returns a list of relevant image elements.
+    """
     relevant_images = []
-    image_summaries = []
     print("Checking image relevance with local textual context...")
     for image_element in images_raw:
         image_filename = image_element.text
@@ -359,16 +365,17 @@ def summarize_elements(texts, tables, images_raw, raw_pdf_elements=None):
             image_context = "No specific text context was captured for this image, infer relevance from filename."
         messages_for_ollama = [
             {
-            "role": "user",
-            "content": (
-                "You are a veterinary assistant helping to build a knowledge base.\n"
-                "Only respond with 'yes' if the image clearly depicts something veterinary-relevant, such as an animal, animal anatomy, veterinary medical procedure, parasite, or disease.\n"
-                "If the image is decorative, a divider, a geometric shape, or you are unsure, respond with 'no'.\n"
-                "Only respond with 'yes' or 'no'.\n\n"
-                f"Local Textual Context: {image_context}\n"
-            ),
-            "images": [image_filename] if os.path.exists(image_filename) else []
-         }
+                "role": "user",
+                "content": (
+                    "You are a veterinary assistant helping to build a knowledge base.\n"
+                    "Respond 'yes' if the image could plausibly be related to veterinary topics, animals, animal care, anatomy, procedures, or anything that might appear in a veterinary textbook—even if the connection is weak, indirect, or only part of an animal is shown.\n"
+                    "Respond 'no' only if the image is clearly decorative, abstract, or has no possible veterinary relevance.\n"
+                    "If there is any reasonable doubt, respond 'yes'.\n"
+                    "Only respond with 'yes' or 'no'.\n\n"
+                    f"Local Textual Context: {image_context}\n"
+                ),
+                "images": [image_filename] if os.path.exists(image_filename) else []
+            }
         ]
         if os.path.exists(image_filename):
             messages_for_ollama[0]["images"].append(image_filename)
@@ -377,7 +384,7 @@ def summarize_elements(texts, tables, images_raw, raw_pdf_elements=None):
         response_content = "no"
         try:
             response_obj = ollama.chat(
-                model="minicpm-v:8b", # Or your preferred vision model
+                model="qwen2.5vl:7b", 
                 messages=messages_for_ollama,
                 options={"temperature": 0.0}
             )
@@ -390,8 +397,14 @@ def summarize_elements(texts, tables, images_raw, raw_pdf_elements=None):
         else:
             print(f"Skipping irrelevant image: {image_filename}")
     print(f"Number of relevant images: {len(relevant_images)}")
-    image_paths = [img_elem.text for img_elem in relevant_images]
-    # Generate LLM summaries for each relevant image
+    return relevant_images
+
+def summarize_images(relevant_images):
+    """
+    Generates LLM summaries for each relevant image using both the image and its context.
+    Returns a list of image summaries.
+    """
+    image_summaries = []
     print("Generating LLM summaries for relevant images...")
     for img_elem in relevant_images:
         image_filename = img_elem.text
@@ -423,6 +436,26 @@ def summarize_elements(texts, tables, images_raw, raw_pdf_elements=None):
             print(f"ERROR: Failed to summarize image {image_filename}: {e}")
             img_summary = image_context  # fallback to context
         image_summaries.append(img_summary)
+    return image_summaries
+
+def summarize_elements(texts, tables, images_raw, raw_pdf_elements=None):
+    """
+    Summarizes text, table, and relevant image elements using Ollama models.
+    Also performs an image relevance check to filter out irrelevant images before summarization.
+    For images, both the image and its LLM-generated summary are embedded separately for multi-modal retrieval.
+    Returns:
+        tuple: (text_summaries, table_summaries, image_paths, relevant_images, image_summaries)
+    """
+    # Summarize texts
+    text_summaries = summarize_texts(texts)
+    # Summarize tables
+    table_summaries = summarize_tables(tables, raw_pdf_elements)
+    print("Texts and Tables Summary Done!")
+    # Check image relevancy
+    relevant_images = check_image_relevancy(images_raw)
+    image_paths = [img_elem.text for img_elem in relevant_images]
+    # Summarize images
+    image_summaries = summarize_images(relevant_images)
     return text_summaries, table_summaries, image_paths, relevant_images, image_summaries
 
 def store_in_chromadb(text_summaries, texts, table_summaries, tables, image_paths, relevant_images=None, image_summaries=None, persist_directory="./chroma_db"):
@@ -474,9 +507,9 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, image_path
             if os.path.exists(image_path):
                 try:
                     doc_id = str(uuid.uuid4())
-                    # 1. Embed image (OpenCLIP will use the image file)
+                    # Embed image 
                     img_doc = Document(
-                        page_content=image_path,  # This will be interpreted as an image by OpenCLIP
+                        page_content=image_path,  #
                         metadata={
                             id_key: doc_id,
                             "type": "image",
@@ -484,7 +517,7 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, image_path
                             "summary": image_summaries[i],
                         }
                     )
-                    # 2. Embed LLM summary (OpenCLIP will use the text)
+                    # Embed LLM summary
                     summary_doc = Document(
                         page_content=image_summaries[i],
                         metadata={
@@ -532,5 +565,6 @@ def delete_irrelevant_images(images_raw, relevant_images_to_summarize):
     print(f"Finished deleting images. Total deleted: {images_deleted_count}")
 
 
+# def semantic_chunk_texts(texts, embedding_model, n_clusters=30):
 
 
