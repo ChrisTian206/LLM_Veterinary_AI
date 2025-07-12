@@ -16,10 +16,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_chroma import Chroma
 from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_core.documents import Document
-from sklearn.cluster import AgglomerativeClustering
-import numpy as np
 
 from unified_retriever import UnifiedRetriever
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_experimental.text_splitter import SemanticChunker
+
 
 class Element(BaseModel):
     type: str
@@ -123,28 +124,18 @@ def clean_and_categorize_elements(raw_pdf_elements, min_meaningful_text_length=1
 
     Args:
         raw_pdf_elements (list): A list of raw elements obtained from partition_pdf.
-        min_meaningful_text_length (int, optional): Minimum length for a text block to be considered meaningful. Defaults to 20.
-        window_size (int, optional): Number of elements before and after an image to consider for context. Defaults to 5.
+        min_meaningful_text_length (int, optional): Minimum length for a text block to be considered meaningful. Defaults to 15.
+        window_size (int, optional): Number of elements before and after an image to consider for context. Defaults to 1.
 
     Returns:
-        tuple: A tuple containing:
+        tuple: (texts, tables, images_raw)
             - texts (list): List of cleaned text chunks.
             - tables (list): List of extracted table contents.
             - images_raw (list): List of Element objects for images with enriched context.
-            - headers_raw (list): List of raw header elements.
-            - titles_raw (list): List of raw title elements.
-            - footers_raw (list): List of raw footer elements.
-            - figure_captions_raw (list): List of raw figure caption elements.
-            - list_items_raw (list): List of raw list item elements.
     """
     text_for_semantic_chunking = []
     tables_raw = []
     images_raw = []
-    headers_raw = []
-    titles_raw = []
-    footers_raw = []
-    figure_captions_raw = []
-    list_items_raw = []
 
     current_text_block = ""
     current_context_prefix = ""
@@ -160,87 +151,38 @@ def clean_and_categorize_elements(raw_pdf_elements, min_meaningful_text_length=1
         element_type_str = str(type(element))
         element_text = str(element).strip()
 
-        if "unstructured.documents.elements.Header" in element_type_str:
-            finalize_text_block_inner(i)
-            
-            is_running_header = False
-            lower_element_text = element_text.lower()
-            if (
-                "qxp" in lower_element_text or
-                "pm" in lower_element_text or
-                "am" in lower_element_text or
-                "page" in lower_element_text or
-                re.search(r'\\d{1,2}/\\d{1,2}/\\d{2,4}', lower_element_text)
-            ):
-                is_running_header = True
-
-            if not is_running_header and not is_junk_text(element_text):
-                current_context_prefix = element_text + " "
-            headers_raw.append(Element(type="header", text=element_text, original_index=i))
-        elif "unstructured.documents.elements.Title" in element_type_str:
+        if "unstructured.documents.elements.Header" in element_type_str or \
+           "unstructured.documents.elements.Title" in element_type_str:
             finalize_text_block_inner(i)
             if not is_junk_text(element_text):
                 current_context_prefix = element_text + " "
-            titles_raw.append(Element(type="title", text=element_text, original_index=i))
         elif "unstructured.documents.elements.NarrativeText" in element_type_str or \
              "unstructured.documents.elements.ListItem" in element_type_str or \
              "unstructured.documents.elements.Text" in element_type_str:
-            
             if len(element_text) < 5 and not any(char.isalpha() for char in element_text):
                 continue
-
             if not current_text_block and current_context_prefix:
                 current_text_block += current_context_prefix
-                
             current_text_block += element_text + " "
-            if "unstructured.documents.elements.ListItem" in element_type_str and not is_junk_text(element_text):
-                list_items_raw.append(Element(type="list_item", text=element_text, original_index=i))
-
         elif "unstructured.documents.elements.Table" in element_type_str:
             finalize_text_block_inner(i)
             if not is_junk_text(element_text):
                 tables_raw.append(Element(type="table", text=element_text, original_index=i))
         elif "unstructured.documents.elements.Image" in element_type_str:
             finalize_text_block_inner(i)
-
             image_path = getattr(element.metadata, "image_path", "N/A")
             images_raw.append(Element(type="image", text=image_path, context="", original_index=i))
             current_text_block = ""
-
-        elif "unstructured.documents.elements.FigureCaption" in element_type_str:
-            finalize_text_block_inner(i)
-            if not is_junk_text(element_text):
-                figure_captions_raw.append(Element(type="figure_caption", text=element_text, original_index=i))
-        elif "unstructured.documents.elements.Footer" in element_type_str:
-            if not is_junk_text(element_text):
-                footers_raw.append(Element(type="footer", text=element_text, original_index=i))
+        # Ignore FigureCaption, Footer, etc.
+        else:
+            continue
 
     finalize_text_block_inner(i)
     # Enrich image context with boundary-aware logic
     enrich_image_context(images_raw, raw_pdf_elements, window_size=window_size)
     texts = text_for_semantic_chunking
     tables = tables_raw
-    
-    return texts, tables, images_raw, headers_raw, titles_raw, footers_raw, figure_captions_raw, list_items_raw
-
-    """
-    Semantically chunk the cleaned text into coherent groups using embeddings and clustering.
-    Returns a list of merged, semantically coherent text chunks.
-    """
-    if len(texts) == 0:
-        return []
-    embeddings = embedding_model.embed_documents(texts)
-    embeddings = np.array(embeddings)
-    n_clusters = min(n_clusters, len(texts))
-    if n_clusters < 2:
-        return texts
-    clustering = AgglomerativeClustering(n_clusters=n_clusters)
-    labels = clustering.fit_predict(embeddings)
-    clusters = {}
-    for idx, label in enumerate(labels):
-        clusters.setdefault(label, []).append(texts[idx])
-    semantic_chunks = ['\n'.join(cluster) for cluster in clusters.values()]
-    return semantic_chunks
+    return texts, tables, images_raw
 
 def enrich_table_context(tables, all_raw_elements, window_size=1):
     """
@@ -305,19 +247,34 @@ def is_decorative_image(image_path, min_area=500, extreme_ratio=3.6):
         pass
     return False
 
+def semantic_chunk_texts(texts, embedding_model=None):
+    """
+    Combines all text chunks into one and applies semantic chunking using LangChain.
+    Returns a list of semantically meaningful text chunks.
+    """
+    combined_text = " ".join([t.text if hasattr(t, "text") else str(t) for t in texts])
+
+    embedding_model = HuggingFaceEmbeddings(model_name="Qwen/Qwen3-Embedding-0.6B")
+    text_splitter = SemanticChunker(embedding_model)
+    docs = text_splitter.create_documents([combined_text])
+    semantic_chunks = [doc.page_content for doc in docs]
+    return semantic_chunks
+
 def summarize_texts(texts):
     """
-    Summarizes text elements using Ollama models.
+    Semantically chunk the input texts, then summarize each chunk using Ollama models.
     Returns a list of summaries.
     """
-    model = ChatOllama(model="llama3.2:3b")
+    # Semantic chunking
+    semantic_chunks = semantic_chunk_texts(texts)
+    model = ChatOllama(model="llama3.1:8b")
     prompt_text_summary = (
         "You are an assistant tasked with concisely summarizing text sections related to veterinary advice and pet care. "
         "Focus on key information, main ideas, and any actionable advice. Just give me the summary, be concise and do not be verbose. Text chunk: {element} "
     )
     prompt_text = ChatPromptTemplate.from_template(prompt_text_summary)
     text_summarize_chain = {"element": lambda x: x} | prompt_text | model | StrOutputParser()
-    return text_summarize_chain.batch(texts, {"max_concurrency": 8})
+    return text_summarize_chain.batch(semantic_chunks, {"max_concurrency": 8})
 
 def summarize_tables(tables, raw_pdf_elements=None):
     """
@@ -326,7 +283,7 @@ def summarize_tables(tables, raw_pdf_elements=None):
     """
     if raw_pdf_elements is not None and tables and hasattr(tables[0], 'context'):
         enrich_table_context(tables, raw_pdf_elements, window_size=1)
-    model = ChatOllama(model="llama3.2:3b")
+    model = ChatOllama(model="llama3.1:8b")
     prompt_table_summary = (
         "You are an assistant tasked with extracting key information, trends, and important numerical data from the provided table, "
         "especially as it relates to veterinary topics, animal health, or clinical practice. Use the provided context to help interpret the table. "
@@ -564,7 +521,5 @@ def delete_irrelevant_images(images_raw, relevant_images_to_summarize):
                 print(f"Skipping deletion: Image file not found at {image_path}")
     print(f"Finished deleting images. Total deleted: {images_deleted_count}")
 
-
-# def semantic_chunk_texts(texts, embedding_model, n_clusters=30):
 
 
