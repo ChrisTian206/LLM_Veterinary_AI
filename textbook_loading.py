@@ -417,22 +417,45 @@ def summarize_elements(texts, tables, images_raw, raw_pdf_elements=None):
 
 def store_in_chromadb(text_summaries, texts, table_summaries, tables, image_paths, relevant_images=None, image_summaries=None, persist_directory="./chroma_db"):
     """
-    Stores the summarized text, table, and image data into a ChromaDB vector store on disk.
-    For images, both the image and its LLM-generated summary are embedded separately for multi-modal retrieval.
+    Stores the summarized text, table, and image data into two ChromaDB vector stores on disk:
+    - Text vectorstore/docstore: for text, table, and image summaries (as text), using a strong text embedding model.
+    - Image vectorstore/docstore: for images, using OpenCLIPEmbeddings.
+    Returns a tuple: (text_retriever, image_retriever, id_key)
     """
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_experimental.open_clip import OpenCLIPEmbeddings
+    from langchain_chroma import Chroma
+    from langchain_core.documents import Document
+    import uuid, os, json
+    from unified_retriever import UnifiedRetriever
+
+    text_embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")   
     open_clip_embeddings = OpenCLIPEmbeddings(model_name="ViT-g-14", checkpoint="laion2b_s34b_b88k")
-    vectorstore = Chroma(
-        collection_name="summaries_and_images",
+
+    # Vectorstores and docstores
+    text_vectorstore = Chroma(
+        collection_name="text_summaries_and_tables_and_image_summaries",
+        embedding_function=text_embeddings,
+        persist_directory=persist_directory
+    )
+    text_docstore = Chroma(
+        collection_name="text_originals",
+        embedding_function=text_embeddings,
+        persist_directory=persist_directory
+    )
+    image_vectorstore = Chroma(
+        collection_name="images",
         embedding_function=open_clip_embeddings,
         persist_directory=persist_directory
     )
-    docstore = Chroma(
-        collection_name="originals",
+    image_docstore = Chroma(
+        collection_name="image_originals",
         embedding_function=open_clip_embeddings,
         persist_directory=persist_directory
     )
     id_key = "doc_id"
-    # Store text chunks
+
+    # Store text chunks (summaries and originals)
     if texts:
         doc_ids = [str(uuid.uuid4()) for _ in texts]
         summary_texts = [
@@ -443,9 +466,9 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, image_path
             Document(page_content=texts[i].text, metadata={id_key: doc_ids[i], "type": "text"})
             for i in range(len(texts))
         ]
-        vectorstore.add_documents(summary_texts, ids=doc_ids)
-        docstore.add_documents(original_text_docs, ids=doc_ids)
-    # Store tables as JSON
+        text_vectorstore.add_documents(summary_texts, ids=doc_ids)
+        text_docstore.add_documents(original_text_docs, ids=doc_ids)
+    # Store tables as JSON (summaries and originals)
     if tables:
         table_ids = [str(uuid.uuid4()) for _ in tables]
         summary_tables = [
@@ -456,46 +479,44 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, image_path
             Document(page_content=json.dumps(tables[i].dict()), metadata={id_key: table_ids[i], "type": "table"})
             for i in range(len(tables))
         ]
-        vectorstore.add_documents(summary_tables, ids=table_ids)
-        docstore.add_documents(original_table_docs, ids=table_ids)
-    # Store images: embed both image and LLM summary separately, link by doc_id
-    if image_paths and relevant_images is not None and image_summaries is not None:
+        text_vectorstore.add_documents(summary_tables, ids=table_ids)
+        text_docstore.add_documents(original_table_docs, ids=table_ids)
+    # Store image summaries (as text) in text vectorstore/docstore
+    if image_summaries and relevant_images is not None:
+        img_summary_ids = [str(uuid.uuid4()) for _ in image_summaries]
+        summary_img_docs = [
+            Document(page_content=image_summaries[i], metadata={id_key: img_summary_ids[i], "type": "image_summary", "image_path": relevant_images[i].text})
+            for i in range(len(image_summaries))
+        ]
+        original_img_summary_docs = [
+            Document(page_content=image_summaries[i], metadata={id_key: img_summary_ids[i], "type": "image_summary", "image_path": relevant_images[i].text})
+            for i in range(len(image_summaries))
+        ]
+        text_vectorstore.add_documents(summary_img_docs, ids=img_summary_ids)
+        text_docstore.add_documents(original_img_summary_docs, ids=img_summary_ids)
+    # Store images in image vectorstore/docstore
+    if image_paths and relevant_images is not None:
         for i, image_path in enumerate(image_paths):
             if os.path.exists(image_path):
                 try:
                     doc_id = str(uuid.uuid4())
-                    # Embed image 
                     img_doc = Document(
-                        page_content=image_path,  #
+                        page_content=image_path,
                         metadata={
                             id_key: doc_id,
                             "type": "image",
                             "image_path": image_path,
-                            "summary": image_summaries[i],
+                            "summary": image_summaries[i] if image_summaries else None,
                         }
                     )
-                    # Embed LLM summary
-                    summary_doc = Document(
-                        page_content=image_summaries[i],
-                        metadata={
-                            id_key: doc_id + "_context",
-                            "type": "image_summary",
-                            "image_path": image_path,
-                            "summary": image_summaries[i],
-                        }
-                    )
-                    # Add both to vectorstore
-                    vectorstore.add_documents([img_doc], ids=[doc_id])
-                    vectorstore.add_documents([summary_doc], ids=[doc_id + "_context"])
-                    # Store original image and summary in docstore
-                    docstore.add_documents([
-                        Document(page_content=image_path, metadata={id_key: doc_id, "type": "image", "summary": image_summaries[i]})
-                    ], ids=[doc_id])
+                    image_vectorstore.add_documents([img_doc], ids=[doc_id])
+                    image_docstore.add_documents([img_doc], ids=[doc_id])
                 except Exception as e:
-                    print(f"Error embedding image or summary {image_path}: {e}")
+                    print(f"Error embedding image {image_path}: {e}")
             else:
                 print(f"Image file not found for embedding: {image_path}")
-    return UnifiedRetriever(vectorstore, docstore, id_key)
+
+    return UnifiedRetriever(text_vectorstore, text_docstore, image_vectorstore, image_docstore,id_key)
 
 def delete_irrelevant_images(images_raw, relevant_images_to_summarize):
     """
