@@ -10,12 +10,14 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import StateGraph, START
 from typing_extensions import TypedDict
 from typing import Optional, List, Dict, Any
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_chroma import Chroma
 from unified_retriever import UnifiedRetriever
+
 
 class GraphState(TypedDict):
     text_query: str
@@ -76,6 +78,37 @@ def query_handler(state):
 
     print(f"1️⃣ Query type determined: {result}")
     return {"query_type": result}
+
+def query_handler_tool(state):
+    original_query = state.get("text_query", "")
+
+    prompt = (
+        "You are a friendly and professional veterinary assistant. "
+        "A user just asked the following question:\n"
+        f"\"{original_query}\"\n\n"
+        "This query appears to be unrelated to veterinary or animal health topics. "
+        "Kindly inform the user that their question isn't within scope and ask them to provide a veterinary-related query. "
+        "Suggest a few example questions related to pet health, animal care, or veterinary emergencies.\n\n"
+        "Respond in a warm and helpful tone, but don't answer the original question."
+    )
+
+    response = ollama.chat(
+        model="mistral:instruct",  # or whatever model you're using
+        messages=[{"role": "user", "content": prompt}],
+        options={"temperature": 0.7}
+    )
+
+    assistant_reply = response["message"]["content"]
+    print(f"\n🤖 {assistant_reply}\n")
+
+    # Ask user again
+    new_text = input("📝 Please enter your new question: ")
+    new_image = input("📷 Optional: Enter image path (or press Enter to skip): ").strip()
+
+    return {
+        "text_query": new_text,
+        "image_path": new_image or None,
+    }
 
 def get_image_summary(image_path):
     prompt = """From a feline veterinary stand point, provide a highly detailed and objective \
@@ -260,49 +293,51 @@ def extract_json_block(text):
 def thinking_node(state):
     user_query = state.get("text_query", "")
     image_summary = state.get("image_summary", "")
-    user_response = state.get("user_responses", {}).get("text", "")
     relevant_docs = state.get("relevant_docs")[0:6] # Limited due to context window size of Qwen3:8b
-    followup_questions = state.get("followup_questions", [])
 
-    if user_response:
-        user_query += f"\nAdditional info from user: {user_response} for those questions that were asked: {followup_questions}"
     prompt = (
         "You are a veterinary assistant AI. The user is a pet owner with little veterinary knowledge. "
         "Explain in simple, actionable language, only suggesting home-care steps. If the case is serious, remind the user to see a vet. "
+        "Respond only in a clean JSON, following the format in provided examples:\n"
         "Base your answer strictly on the provided docs. "
         "If you need more info, specify what and which tool to use. "
-        "You have access to a veterinary textbook and a database of documents, images, and tables. "
-        "If the provided docs do not fully answer the user's question, you can suggest new search queries to retrieve more information. "
-        "To do this, output 'Next action: retrieve more info' and provide a list of new queries that would help you find the answer. "
+        "Here are the tools you can use:\n"
+
+        "- **retrieve more info**: If you need more specific information to give a safe, actionable answer, use this tool to search the veterinary handbook or database for additional details. You will generate some queries for the retriever. Here is an example:\n"
         "Example queries: [\"causes of cat ear bleeding\", \"cat ear infection symptoms\", \"treatment for dark wax in cat ear\"]\n\n"
-        "When to use each action/tool:\n"
-        "- Use 'retrieve more info' if the provided docs are insufficient, missing key details, or you are uncertain about the answer. Suggest specific, focused queries that would help you find the missing information in the textbook or database.\n"
-        "- Use 'ask the user a question' if you need clarification, more details about the pet's symptoms, or additional context from the user to proceed.\n"
-        "- Use 'ready to answer' if you have enough information from the provided docs to give a helpful, actionable answer.\n"
-        "If you are missing key details, or the docs are insufficient, do not guess—ask for more info or suggest retrieval.\n\n"
-        "Respond only in a clean JSON, using one of these formats:\n"
+        "Output the next action and queries in this format:\n"
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
         '  \"next_action\": \"retrieve more info\",\n'
         '  \"queries\": [\"query1\", \"query2\"],\n'
         '}\n'
-        "or\n"
+
+        "- **ask the user a question**: If you need clarification or more details about the pet's symptoms or need pet's owner's help, use this tool to ask the user a specific question or action. Here is an example:\n"
+        "Example question: \"Can you describe the color and consistency of the discharge from your cat's ear?\", \"Can you do the following action: check your cat's ear for any visible redness or swelling?\"\n\n"
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
         '  \"next_action\": \"ask the user a question\",\n'
         '  \"questions\": \"your answer\"\n'
         '}\n'
-        "or\n"
+
+        "Try the best you can to answer the user's question based on the retrieved documents and user response. If user cannot provide enough information, don't push them to answer. Provide a general answer based on the retrieved documents. \n"
+    
+        "If you have enough information from the provided docs to give a helpful, actionable answer. \n"
+        "Output the next action and answer in this format:\n"
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
         '  \"next_action\": \"ready to answer\",\n'
         '  \"answer\": \"your answer\",\n'
         '}\n\n'
+
+        "Here is the original user query:\n"
         f"User question: {user_query}\n"
+
+        "Here is the image summary (if provided):\n"
     )
     if image_summary: 
         prompt += f"Image summary: {image_summary}\n"
-    prompt += "Relevant information from veterinary handbook:\n"
+    prompt += "Here are relevant information from veterinary handbook:\n"
     for i, doc in enumerate(relevant_docs):
         modality = doc.get('modality') or (doc.get('original_metadata') or {}).get('type')
         doc_id = doc.get('doc_id') or (doc.get('original_metadata') or {}).get('doc_id')
@@ -320,6 +355,15 @@ def thinking_node(state):
         else:
             summary = doc.get('summary', '')
             prompt += f"{i+1}. [TEXT] Summary: {summary} (id: {doc_id})\n"
+
+# Add Q&A pairs to the prompt
+    q_list = state.get("followup_questions", [])
+    a_list = state.get("user_responses", [])
+    prompt += "\nHere is the questions you asked and user response. From oldest to lastest.\n"
+    prompt += "\nIf user is unable to answer or response is empty, do not repeat questions.\n"
+    if q_list and a_list:
+        for q, a in zip(q_list, a_list):
+            prompt += f"Question: {q}\n User Response: {a}\n"
 
     messages = [{"role": "user", "content": prompt}]
     print("6️⃣ Thinking about the user's query...")
@@ -353,7 +397,9 @@ def thinking_node(state):
                     questions = [questions]
                 elif not isinstance(questions, list):
                     questions = []
-                return {"next_action": "ask_user", "followup_questions": questions}
+                all_questions = state.get("followup_questions", [])
+                all_questions.extend(questions)
+                return {"next_action": "ask_user", "followup_questions": all_questions}
             elif next_action == "ready to answer":
                 final_answer = parsed.get("answer")
                 return {"next_action": "final_answer_node", "final_answer": final_answer}
@@ -387,23 +433,23 @@ def retrieval_tool(state):
     return {"next_action": None, "retrieved_docs": all_docs}
 
 def ask_user_tool(state):
-    followup_questions = state.get("followup_questions")
-    print("❓ ",followup_questions)
+    followup_questions = state.get("followup_questions", [])
+    user_responses = state.get("user_responses", [])
+    # Only ask the last question
+    last_question = followup_questions[-1] if followup_questions else ""
+    print("❓ ", last_question)
     user_text = input("Your answer (press Enter to skip): ").strip()
     user_image_path = input("If you want to provide an image, enter the file path (or press Enter to skip): ").strip()
-    user_response_entry = {}
-    if user_text:
-        user_response_entry["text"] = user_text
+    response_entry = user_text
     if user_image_path:
         try:
-            image_summary = describe_user_image(user_image_path) 
+            image_summary = describe_user_image(user_image_path)
+            response_entry += f" [Image summary: {image_summary}]"
         except Exception as e:
             print(f"Error interpreting image: {e}")
-            image_summary = None
-        user_response_entry["image_path"] = user_image_path
-        user_response_entry["image_summary"] = image_summary
-    
-    return { "next_action": None, "user_responses": user_response_entry}
+    # Append response
+    user_responses.append(response_entry)
+    return {"next_action": None, "user_responses": user_responses}
 
 def describe_user_image(image_path):
     prompt = (
@@ -425,18 +471,15 @@ def describe_user_image(image_path):
 
 def final_answer_node(state):
     final_answer = state["final_answer"]
-    CoT = state.get("intermediate_thoughts", [])
-    print(" 🧠 Chain of Thoughts: ", CoT)
-
     print("7️⃣ Final answer generated: ", final_answer)
 
 def build_graph():
-    from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.graph import StateGraph, START
+
     checkpointer = InMemorySaver()
     builder = StateGraph(GraphState)  
 
     builder.add_node("query_handler", query_handler)
+    builder.add_node("query_handler_tool", query_handler_tool)
     builder.add_node("query_refinement", query_refinement_node)
     builder.add_node("query_decomposition", query_decomposition)
     builder.add_node("contextual_retrieval", contextual_retrieval_node)
@@ -447,10 +490,11 @@ def build_graph():
     builder.add_node("final_answer_node", final_answer_node)
 
     builder.add_edge(START, "query_handler")
+
     def query_type_router(state):
         query_type = state.get("query_type")
         if query_type == "irrelevant":
-            return "query_handler"  # Loop back for irrelevant queries
+            return "query_handler_tool"  
         else:
             return "query_refinement"  # Proceed for Q&A or emergency
 
@@ -458,11 +502,12 @@ def build_graph():
         "query_handler",
         query_type_router,
         {
-            "query_handler": "query_handler",
+            "query_handler_tool": "query_handler_tool",
             "query_refinement": "query_refinement"
         }
     )
 
+    builder.add_edge("query_handler_tool", "query_handler")
     builder.add_edge("query_refinement", "query_decomposition")
     builder.add_edge("query_decomposition", "contextual_retrieval")
     builder.add_edge("contextual_retrieval","relevancy_check")
