@@ -131,4 +131,3 @@ pdfplumber>=0.9.0
 # Version pinning note:
 # Some versions are pinned to ensure compatibility
 # Upgrade carefully and test thoroughly when updating major versions
->>>>>>> 0d4bc19 (Add requirements)

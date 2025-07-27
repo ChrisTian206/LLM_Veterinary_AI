@@ -1,16 +1,17 @@
 import sys
 import os
 import uuid
+import requests
+import json
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../')))
 import ollama
 import re
-import json
 
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import StateGraph, START
+from langgraph.graph import StateGraph, START, END
 from typing_extensions import TypedDict
 from typing import Optional, List, Dict, Any
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -43,8 +44,13 @@ class GraphState(TypedDict):
     emergency_retrieved_docs: Optional[List[Dict[str, Any]]]
     web_search_results: Optional[List[Dict[str, Any]]]
     final_answer: Optional[str]
+    ai_response: Optional[List[str]]
     path_taken: Optional[List[str]]
     error: Optional[str]
+    latest_user_input: Optional[str]  # Add this field
+    retrieval_count: Optional[int]    # Add this field
+    wikipedia_results: Optional[List[Dict[str, Any]]]  # Add this field
+    new_docs_count: Optional[int]     # Add this field
     
 def query_handler(state):
     text_query = state.get("text_query", "")
@@ -290,21 +296,36 @@ def extract_json_block(text):
         return text[start:end+1].strip()
     return text
 
+
 def thinking_node(state):
     user_query = state.get("text_query", "")
     image_summary = state.get("image_summary", "")
-    relevant_docs = state.get("relevant_docs")[0:6] # Limited due to context window size of Qwen3:8b
-
+    relevant_docs = state.get("relevant_docs", [])[:8]
+    
+    latest_user_input = state.get("latest_user_input", "")
+    
+    
     prompt = (
-        "You are a veterinary assistant AI. The user is a pet owner with little veterinary knowledge. "
-        "Explain in simple, actionable language, only suggesting home-care steps. If the case is serious, remind the user to see a vet. "
-        "Respond only in a clean JSON, following the format in provided examples:\n"
+        "You are a veterinary assistant AI helping pet owners with at-home vet care. The user is a pet owner with little veterinary knowledge. "
+        "You are providing a at-home care advice based on book 'Cat Owners' Home Veterinary Handbook by Debra M. Eldredge'. This entire book is available to you, and you can retrieve information from it using the retrieve tool."
+
+        "Your job is to help the user by understanding their needs, asking follow-up questions, retrieving relevant information, and providing a comprehensive answer based on the user's query, the retrieved documents, and Wikipedia articles so that your answer is safe, actionable, and reliable.\n\n"
+
+        "Respond only in a clean JSON, following the format in provided examples.\n"
         "Base your answer strictly on the provided docs. "
         "If you need more info, specify what and which tool to use. "
+        
+        "You should be thorough and make multiple retrieval calls to gather comprehensive information before answering. "
+        "Consider making more targeted retrieval calls if the information seems incomplete for the specific symptoms described.\n"
+    )
+    
+   
+    
+    prompt += (
         "Here are the tools you can use:\n"
 
-        "- **retrieve more info**: If you need more specific information to give a safe, actionable answer, use this tool to search the veterinary handbook or database for additional details. You will generate some queries for the retriever. Here is an example:\n"
-        "Example queries: [\"causes of cat ear bleeding\", \"cat ear infection symptoms\", \"treatment for dark wax in cat ear\"]\n\n"
+        "- **retrieve more info**: If you need more specific information to give a safe, actionable answer, use this tool to search the veterinary handbook or database for additional details. Focus on specific symptoms or conditions mentioned by the user. Here is an example:\n"
+        "Example queries: [\"cat urinary blockage symptoms\", \"cat difficulty sitting spinal issues\", \"feline urethral obstruction emergency\"]\n\n"
         "Output the next action and queries in this format:\n"
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
@@ -312,32 +333,33 @@ def thinking_node(state):
         '  \"queries\": [\"query1\", \"query2\"],\n'
         '}\n'
 
-        "- **ask the user a question**: If you need clarification or more details about the pet's symptoms or need pet's owner's help, use this tool to ask the user a specific question or action. Here is an example:\n"
-        "Example question: \"Can you describe the color and consistency of the discharge from your cat's ear?\", \"Can you do the following action: check your cat's ear for any visible redness or swelling?\"\n\n"
+        "- **search wikipedia**: If you need general background information or want to cross-reference veterinary conditions, use this tool to search Wikipedia. Here is an example:\n"
+        "Example query: \"feline urinary tract infection\"\n\n"
+        "Output the next action and query in this format:\n"
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
-        '  \"next_action\": \"ask the user a question\",\n'
-        '  \"questions\": \"your answer\"\n'
+        '  \"next_action\": \"search wikipedia\",\n'
+        '  \"wikipedia_query\": \"your search query\"\n'
         '}\n'
 
-        "Try the best you can to answer the user's question based on the retrieved documents and user response. If user cannot provide enough information, don't push them to answer. Provide a general answer based on the retrieved documents. \n"
-    
-        "If you have enough information from the provided docs to give a helpful, actionable answer. \n"
-        "Output the next action and answer in this format:\n"
+        "- **continue conversation**: If you want to ask the user NEW follow-up questions (not ones already asked) or provide information and continue the conversation, use this tool. Here is an example:\n"
+        "Example response: \"Based on the symptoms you described, this could be a urinary blockage. Can you tell me if your cat is straining to urinate?\"\n\n"
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
-        '  \"next_action\": \"ready to answer\",\n'
-        '  \"answer\": \"your answer\",\n'
-        '}\n\n'
+        '  \"next_action\": \"continue conversation\",\n'
+        '  \"response\": \"your response or question to the user\",\n'
+        '}\n'
 
-        "Here is the original user query:\n"
-        f"User question: {user_query}\n"
-
-        "Here is the image summary (if provided):\n"
     )
+
+    prompt += f"Original user query: {user_query}\n"
+    if latest_user_input:
+        prompt += f"Latest user input: {latest_user_input}\n"
+
     if image_summary: 
         prompt += f"Image summary: {image_summary}\n"
-    prompt += "Here are relevant information from veterinary handbook:\n"
+    
+    prompt += f"\nHere are {len(relevant_docs)} relevant documents from veterinary handbook:\n"
     for i, doc in enumerate(relevant_docs):
         modality = doc.get('modality') or (doc.get('original_metadata') or {}).get('type')
         doc_id = doc.get('doc_id') or (doc.get('original_metadata') or {}).get('doc_id')
@@ -356,64 +378,111 @@ def thinking_node(state):
             summary = doc.get('summary', '')
             prompt += f"{i+1}. [TEXT] Summary: {summary} (id: {doc_id})\n"
 
-# Add Q&A pairs to the prompt
-    q_list = state.get("followup_questions", [])
+    # Add Wikipedia results if available
+    wikipedia_results = state.get("wikipedia_results", [])
+    if wikipedia_results:
+        prompt += "\nHere are relevant Wikipedia articles:\n"
+        for i, result in enumerate(wikipedia_results):
+            prompt += f"{i+1}. [WIKIPEDIA] Title: {result.get('title', '')}\nSummary: {result.get('summary', '')[:500]}...\n"
+
+    # Add conversation history only if not a new topic
+    q_list = state.get("ai_response", [])
     a_list = state.get("user_responses", [])
-    prompt += "\nHere is the questions you asked and user response. From oldest to lastest.\n"
-    prompt += "\nIf user is unable to answer or response is empty, do not repeat questions.\n"
-    if q_list and a_list:
-        for q, a in zip(q_list, a_list):
-            prompt += f"Question: {q}\n User Response: {a}\n"
+    if q_list and a_list and len(a_list) > 0:
+        recent_pairs = list(zip(q_list, a_list)) 
+        if recent_pairs:
+            prompt += "\nRecent conversation history (DO NOT repeat these questions):\n"
+            for q, a in recent_pairs:
+                prompt += f"AI : {q}\n User: {a}\n"
+                
 
     messages = [{"role": "user", "content": prompt}]
     print("6️⃣ Thinking about the user's query...")
-    print("Prompt length: ", len(prompt),)
+    print("Prompt length: ", len(prompt))
+    
     response = ollama.chat(
         model="qwen3:8b", 
         messages=messages,
-        options={"temperature": 0.2},
+        options={"temperature": 0.1},
     )
+    
     llm_output = response['message']['content']
     think_match = re.search(r"<think>(.*?)</think>", llm_output, re.DOTALL | re.IGNORECASE)
     if think_match:
         reasoning = think_match.group(1).strip()
     else:
         reasoning = ""
+    
     output_for_user = re.sub(r"<think>.*?</think>", "", llm_output, flags=re.DOTALL | re.IGNORECASE).strip()
     output_for_user_clean = extract_json_block(output_for_user)
     state["intermediate_thoughts"] = state.get("intermediate_thoughts", []) + [reasoning]
 
-
     if output_for_user_clean.startswith("{") and output_for_user_clean.endswith("}"):
         try:
             parsed = json.loads(output_for_user_clean)
+            print("🔍 DEBUG: inspecting JSON: ", parsed)
             next_action = parsed.get("next_action", "").lower()
+            
             if next_action == "retrieve more info":
                 queries = parsed.get("queries", [])
                 return {"next_action": "retrieve_more_info", "queries_for_retrieval": queries}
-            elif "ask the user" in next_action or "ask user" in next_action:
-                questions = parsed.get("questions", [])
-                if isinstance(questions, str):
-                    questions = [questions]
-                elif not isinstance(questions, list):
-                    questions = []
-                all_questions = state.get("followup_questions", [])
-                all_questions.extend(questions)
-                return {"next_action": "ask_user", "followup_questions": all_questions}
-            elif next_action == "ready to answer":
-                final_answer = parsed.get("answer")
-                return {"next_action": "final_answer_node", "final_answer": final_answer}
+            elif next_action == "search wikipedia":
+                wikipedia_query = parsed.get("wikipedia_query", "")
+                return {"next_action": "search_wikipedia", "wikipedia_query": wikipedia_query}
+            elif "continue conversation" in next_action:
+                response_text = parsed.get("response", "")
+                ai_response = state.get("ai_response", [])
+                ai_response.append(response_text)
+                return {"next_action": "user_interaction", "ai_response": ai_response}
+                    
+        
         except Exception as e:
             print("⚠️ Failed to parse JSON:", e)
-    # fallback
-    print("6️⃣ Now at the final return of thinking_node")
-    return {"next_action": "final_answer_node", "final_answer": output_for_user_clean}
+
+def user_interaction_node(state):
+    """Node for continuous user interaction - handles questions and responses"""
+    print("7️⃣ User interaction node activated.")
+    ai_response = state.get("ai_response", [])
+    if ai_response and len(ai_response) > 0:
+        print(f"🤖 {ai_response[-1]}")
+    
+    # Get user input
+    user_input = input("Your response (or type '/bye' to exit): ").strip()
+    
+    # Check for exit command
+    if user_input.lower() == '/bye':
+        print("\nThank you for using the Veterinary Assistant! Take care of your pet! 🐱")
+        return {"next_action": "exit", "user_input": user_input}
+    
+    # Check if user wants to provide an image
+    image_path = input("If you want to provide an image, enter the file path (or press Enter to skip): ").strip()
+    
+    # Update state with user response
+    existing_responses = state.get("user_responses", [])
+    existing_responses.append(user_input)
+    
+    # Clear followup questions since user has responded
+    result = {
+        "next_action": "continue_conversation",
+        "user_responses": existing_responses,
+        "latest_user_input": user_input,
+    }
+    
+    # If user provided an image, get summary and add to state
+    if image_path and os.path.exists(image_path):
+        print("📸 Processing your image...")
+        image_summary = get_image_summary(image_path)
+        result["image_summary"] = image_summary
+        result["image_path"] = image_path
+    
+    return result
 
 def retrieval_tool(state):
     queries = state.get("queries_for_retrieval", [])
     print("Retrieving more information for queries: ", queries)
     if not retriever or not queries:
-        return state
+        return {"next_action": "process_new_docs"}
+    
     existing_docs = state.get("retrieved_docs", [])
     seen_doc_ids = set(
         doc.get('doc_id') or doc.get('summary_metadata', {}).get('doc_id')
@@ -427,54 +496,135 @@ def retrieval_tool(state):
             if doc_id and doc_id not in seen_doc_ids:
                 seen_doc_ids.add(doc_id)
                 new_docs.append(doc)
+    
     all_docs = existing_docs + new_docs
-    state["retrieved_docs"] = all_docs
-    state["next_action"] = None
-    return {"next_action": None, "retrieved_docs": all_docs}
+    
+    # Increment retrieval count
+    retrieval_count = state.get("retrieval_count", 0) + 1
+    
+    print(f"📊 Added {len(new_docs)} new documents. Total: {len(all_docs)} documents.")
+    
+    return {
+        "next_action": "process_new_docs", 
+        "retrieved_docs": all_docs, 
+        "retrieval_count": retrieval_count,
+        "new_docs_count": len(new_docs)
+    }
 
-def ask_user_tool(state):
-    followup_questions = state.get("followup_questions", [])
-    user_responses = state.get("user_responses", [])
-    # Only ask the last question
-    last_question = followup_questions[-1] if followup_questions else ""
-    print("❓ ", last_question)
-    user_text = input("Your answer (press Enter to skip): ").strip()
-    user_image_path = input("If you want to provide an image, enter the file path (or press Enter to skip): ").strip()
-    response_entry = user_text
-    if user_image_path:
-        try:
-            image_summary = describe_user_image(user_image_path)
-            response_entry += f" [Image summary: {image_summary}]"
-        except Exception as e:
-            print(f"Error interpreting image: {e}")
-    # Append response
-    user_responses.append(response_entry)
-    return {"next_action": None, "user_responses": user_responses}
+def process_new_docs_node(state):
+    """Process newly retrieved documents through relevancy check"""
+    all_docs = state.get("retrieved_docs", [])
+    existing_relevant = state.get("relevant_docs", [])
+    new_docs_count = state.get("new_docs_count", 0)
+    
+    if new_docs_count == 0:
+        return {"next_action": None}
+    
+    # Get only the newly added documents
+    new_docs = all_docs[-new_docs_count:] if new_docs_count > 0 else []
+    
+    if not new_docs:
+        return {"next_action": None}
+    
+    print(f"🔍 Processing {len(new_docs)} newly retrieved documents for relevancy...")
+    
+    # Run relevancy check on new documents
+    relevant_new_docs = []
+    query = state.get('refined_query', '') or state.get('text_query', '')
+    latest_user_input = state.get('latest_user_input', '')
+    
+    # Use latest user input if available for more context
+    check_query = f"{query}. Latest user input: {latest_user_input}" if latest_user_input else query
+    
+    for doc in new_docs:
+        modality = doc.get('modality') or (doc.get('original_metadata') or {}).get('type')
+        summary = doc.get('summary', '')
+        if modality in ('image', 'image_summary'):
+            image_path = (doc.get('original_metadata') or {}).get('image_path')
+            doc_desc = f"[IMAGE] Path: {image_path}\nSummary: {summary}"
+        elif modality == 'table':
+            doc_desc = f"[TABLE] Summary: {summary}"
+        else:
+            doc_desc = f"[TEXT] Summary: {summary}"
+        
+        prompt = (
+            "You are a veterinary assistant AI. You are checking if a document is relevant and useful for answering a user's veterinary question. "
+            "The document may be a summary of a textbook passage, a table, or an image (with a summary). "
+            "Only say YES if the document contains information that would help answer the user's question, or provides context, steps, or background. "
+            "If the document is off-topic, generic, or not helpful, say NO.\n\n"
+            f"User query and context: {check_query}\nDocument: {doc_desc}\n\n"
+            "Is this document relevant and useful for answering the query?"
+            "Respond with only YES or NO."
+        )
+        messages = [{"role": "user", "content": prompt}]
+        response = ollama.chat(
+            model="mistral:instruct",
+            messages=messages,
+            options={"temperature": 0},
+        )
+        answer = response['message']['content'].strip().lower()
+        if answer.startswith('yes'):
+            relevant_new_docs.append(doc)
+    
+    # Combine with existing relevant docs, avoiding duplicates
+    existing_relevant_ids = set(
+        doc.get('doc_id') or doc.get('summary_metadata', {}).get('doc_id')
+        for doc in existing_relevant
+    )
+    
+    combined_relevant = existing_relevant.copy()
+    for doc in relevant_new_docs:
+        doc_id = doc.get('doc_id') or doc.get('summary_metadata', {}).get('doc_id')
+        if doc_id not in existing_relevant_ids:
+            combined_relevant.append(doc)
+    
+    print(f"✅ Found {len(relevant_new_docs)} relevant documents from new retrieval. Total relevant: {len(combined_relevant)}")
+    
+    return {
+        "next_action": None,
+        "relevant_docs": combined_relevant
+    }
 
-def describe_user_image(image_path):
-    prompt = (
-        "You are a veterinary assistant AI. "
-        "Describe the key features, symptoms, or findings in this image as they relate to a cat's health. "
-        "Be concise and factual. If the image is unclear or irrelevant, say so."
-    )
-    messages = [{
-        "role": "user",
-        "content": prompt,
-        "images": [image_path]
-    }]
-    response = ollama.chat(
-        model="minicpm-v:8b",
-        messages=messages,
-        options={"temperature": 0.2}
-    )
-    return response['message']['content']
+def wikipedia_search_tool(state):
+    """Search Wikipedia for veterinary information"""
+    query = state.get("wikipedia_query", "")
+    print(f"🔍 Searching Wikipedia for: {query}")
+    
+    if not query:
+        return {"next_action": None}
+    
+    try:
+        # Search Wikipedia API
+        search_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + query.replace(" ", "_")
+        response = requests.get(search_url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            wikipedia_result = {
+                "title": data.get("title", ""),
+                "summary": data.get("extract", ""),
+                "url": data.get("content_urls", {}).get("desktop", {}).get("page", "")
+            }
+            
+            existing_results = state.get("wikipedia_results", [])
+            existing_results.append(wikipedia_result)
+            
+            print(f"📚 Found Wikipedia article: {wikipedia_result['title']}")
+            return {"next_action": None, "wikipedia_results": existing_results}
+        else:
+            print(f"⚠️ Wikipedia search failed with status: {response.status_code}")
+            return {"next_action": None}
+            
+    except Exception as e:
+        print(f"⚠️ Error searching Wikipedia: {e}")
+        return {"next_action": None}
 
 def final_answer_node(state):
     final_answer = state["final_answer"]
-    print("7️⃣ Final answer generated: ", final_answer)
+    print(f"🤖 {final_answer}")
+    return {"next_action": "user_interaction"}
 
 def build_graph():
-
     checkpointer = InMemorySaver()
     builder = StateGraph(GraphState)  
 
@@ -486,7 +636,9 @@ def build_graph():
     builder.add_node("relevancy_check", relevancy_check_node)
     builder.add_node("thinking", thinking_node)
     builder.add_node("retrieval_tool", retrieval_tool)
-    builder.add_node("ask_user_tool", ask_user_tool)
+    builder.add_node("process_new_docs_node", process_new_docs_node)  # New node
+    builder.add_node("wikipedia_search_tool", wikipedia_search_tool)
+    builder.add_node("user_interaction_node", user_interaction_node)
     builder.add_node("final_answer_node", final_answer_node)
 
     builder.add_edge(START, "query_handler")
@@ -517,25 +669,68 @@ def build_graph():
         action = state.get("next_action")
         if action == "retrieve_more_info":
             return "retrieval_tool"
-        elif action == "ask_user":
-            return "ask_user_tool"
-        elif action == "ready_to_answer":
-            return "final_answer_node"
+        elif action == "search_wikipedia":
+            return "wikipedia_search_tool"
+        elif action == "user_interaction":
+            return "user_interaction_node"
         else:
-            return "final_answer_node"
+            return "user_interaction_node"
+    
     builder.add_conditional_edges(
         "thinking",
         thinking_router,
         {
             "retrieval_tool": "retrieval_tool",
-            "ask_user_tool": "ask_user_tool",
-            "final_answer_node": "final_answer_node"
+            "wikipedia_search_tool": "wikipedia_search_tool",
+            "user_interaction_node": "user_interaction_node",
         }
     )
-    builder.add_edge("retrieval_tool", "contextual_retrieval")
-    builder.add_edge("ask_user_tool", "thinking")
+    
+    def user_interaction_router(state):
+        action = state.get("next_action")
+        if action == "exit":
+            return "END"
+        else:
+            return "thinking"
+    
+    builder.add_conditional_edges(
+        "user_interaction_node",
+        user_interaction_router,
+        {
+            "thinking": "thinking",
+            "END": END  
+        }
+    )
+    
+    def retrieval_router(state):
+        action = state.get("next_action")
+        if action == "process_new_docs":
+            return "process_new_docs_node"
+        else:
+            return "thinking"
+    
+    builder.add_conditional_edges(
+        "retrieval_tool",
+        retrieval_router,
+        {
+            "process_new_docs_node": "process_new_docs_node",
+            "thinking": "thinking"
+        }
+    )
+    
+    builder.add_edge("process_new_docs_node", "thinking")
+    builder.add_edge("wikipedia_search_tool", "thinking")
+    builder.add_edge("final_answer_node", "user_interaction_node")
+    
     graph = builder.compile(checkpointer=checkpointer)
-    #graph = builder.compile()
+    
+    # print("***************Graph built successfully! 🐾****************")
+    # from IPython.display import Image, display
+    # graph_image = graph.get_graph(xray=True).draw_mermaid_png()
+    # with open("graph_visualization.png", "wb") as f:
+    #     f.write(graph_image)
+    # print("Graph saved as graph_visualization.png")
+
 
     return graph
 
@@ -573,17 +768,36 @@ def main():
     global retriever
     retriever = init_retriever() 
     graph = build_graph()
+    
     print("Welcome to the Veterinary Assistant!")
+    print("You can have a continuous conversation with the AI.")
+    print("Type '/bye' at any time to exit the conversation.\n")
+    
+    thread_id = str(uuid.uuid4())
+    
     text_query = input("Enter your question about your cat (or pet): ").strip()
+    
+    # Check for exit command
+    if text_query.lower() == '/bye':
+        return
+    
     image_path = input("If you want to provide an image, enter the file path (or press Enter to skip): ").strip()
+    
     initial_state = {
         "text_query": text_query,
         "image_path": image_path if image_path else None,
         "loop_count": 0,
-         
+        "retrieval_count": 0,
+        "wikipedia_results": [],
+        "user_responses": [],
     }
-    result = graph.invoke(initial_state,  {"configurable": {"thread_id": str(uuid.uuid4())}})
-    print("Session complete.")
+    
+    try:
+        # Start the conversation
+        result = graph.invoke(initial_state, {"configurable": {"thread_id": thread_id}})
+    except Exception as e:
+        print(f"⚠️ An error occurred: {e}")
+        print("The conversation has ended.")
 
 if __name__ == "__main__":
     main()

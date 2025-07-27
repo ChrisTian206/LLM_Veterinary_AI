@@ -1,0 +1,26 @@
+Welcome to the Veterinary Assistant!
+Enter your question about your cat (or pet): what to do if my cat is having a heat stroke?
+If you want to provide an image, enter the file path (or press Enter to skip): 
+1️⃣ Query type determined: irrelevant
+
+🤖  Hello there! It seems like your question is more about general emergency response rather than specifically related to pet health or veterinary topics. To better assist you, I'd be happy to help with questions about pet care, animal health, or veterinary emergencies. Here are a few examples:
+
+1. "What should I do if my dog eats chocolate?"
+2. "My cat has been vomiting for two days, what could be the cause and when should I take it to the vet?"
+3. "Is it normal for a rabbit to have diarrhea?"
+4. "My guinea pig is breathing heavily, what could be the issue?"
+5. "What are signs of dehydration in reptiles?"
+
+If your current concern involves a heat-related emergency with your pet, I'd recommend contacting a veterinarian or an animal emergency service immediately. They will provide guidance tailored to your specific situation. I hope this helps!
+
+📝 Please enter your new question: what to do if my cat is having a heat stroke?
+📷 Optional: Enter image path (or press Enter to skip): 
+1️⃣ Query type determined: q&a
+2️⃣ Query refined:   I am concerned about my cat experiencing a heat stroke. Can you provide information on the possible ...
+3️⃣ Query decomposition complete:  ['Causes of heat stroke in cats', 'Signs and symptoms of heat stroke in cats', 'Management steps for suspected cat heat stroke'] ...
+4️⃣ Retrieved 33 unique documents for 9 queries.
+5️⃣ Found 10 relevant documents out of 33 retrieved documents.
+6️⃣ Thinking about the user's query...
+Prompt length:  6980
+7️⃣ Final answer generated:  If your cat is experiencing heat stroke, act quickly: 1. Move them to a cool, shaded area. 2. Apply cool (not ice-cold) water to their ears, neck, and torso to lower their temperature. 3. Monitor for rapid breathing, bright red tongue, vomiting, or elevated temperature (>106°F). 4. Do NOT give water orally if they are vomiting. 5. Seek immediate veterinary care, as heat stroke can lead to severe complications. Cool the cat safely but avoid causing stress during handling.
+Session complete.
