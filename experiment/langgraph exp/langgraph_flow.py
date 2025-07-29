@@ -15,6 +15,8 @@ from langgraph.graph import StateGraph, START, END
 from typing_extensions import TypedDict
 from typing import Optional, List, Dict, Any
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.tools import WikipediaQueryRun
+from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_chroma import Chroma
 from unified_retriever import UnifiedRetriever
@@ -47,16 +49,18 @@ class GraphState(TypedDict):
     ai_response: Optional[List[str]]
     path_taken: Optional[List[str]]
     error: Optional[str]
-    latest_user_input: Optional[str]  # Add this field
-    retrieval_count: Optional[int]    # Add this field
-    wikipedia_results: Optional[List[Dict[str, Any]]]  # Add this field
-    new_docs_count: Optional[int]     # Add this field
+    latest_user_input: Optional[str]
+    retrieval_count: Optional[int]
+    wikipedia_query: Optional[str]
+    wikipedia_results: Optional[List[Dict[str, Any]]]
+    new_docs_count: Optional[int]
+    action_history: Optional[List[str]]
     
 def query_handler(state):
     text_query = state.get("text_query", "")
     image_path = state.get("image_path", None)
     prompt = (
-        "You are a domain classifier for a veterinary assistant. "
+        "You are a domain classifier for a feline veterinary assistant. "
         "If an image is provided, understand the image from veterinary point of view."
         "A user query is the combination of text query and image(if there is). "
         "Then, classify the user query into one of three categories:\n"
@@ -89,12 +93,12 @@ def query_handler_tool(state):
     original_query = state.get("text_query", "")
 
     prompt = (
-        "You are a friendly and professional veterinary assistant. "
+        "You are a friendly and professional feline veterinary assistant. "
         "A user just asked the following question:\n"
         f"\"{original_query}\"\n\n"
-        "This query appears to be unrelated to veterinary or animal health topics. "
+        "This query appears to be unrelated to our feline veterinary or animal health topics. "
         "Kindly inform the user that their question isn't within scope and ask them to provide a veterinary-related query. "
-        "Suggest a few example questions related to pet health, animal care, or veterinary emergencies.\n\n"
+        "Suggest a few example questions related to cats health, animal care, or cat veterinary emergencies.\n\n"
         "Respond in a warm and helpful tone, but don't answer the original question."
     )
 
@@ -296,20 +300,25 @@ def extract_json_block(text):
         return text[start:end+1].strip()
     return text
 
-
 def thinking_node(state):
     user_query = state.get("text_query", "")
     image_summary = state.get("image_summary", "")
-    relevant_docs = state.get("relevant_docs", [])[:8]
-    
+    relevant_docs = state.get("relevant_docs", [])[:10]
+    action_history = state.get("action_history", [])
     latest_user_input = state.get("latest_user_input", "")
     
-    
+    consecutive_retrievals = 0
+    for action in reversed(action_history):
+        if action == "retrieve":
+            consecutive_retrievals += 1
+        else:
+            break
+
     prompt = (
         "You are a veterinary assistant AI helping pet owners with at-home vet care. The user is a pet owner with little veterinary knowledge. "
-        "You are providing a at-home care advice based on book 'Cat Owners' Home Veterinary Handbook by Debra M. Eldredge'. This entire book is available to you, and you can retrieve information from it using the retrieve tool."
+        "You are providing a at-home care advice based on book 'Cat Owners' Home Veterinary Handbook by Debra M. Eldredge'. This entire book and wikipedia are available to you, and you can retrieve information from the book using the retrieve tool and search on Wikipedia using the wikipedia tool."
 
-        "Your job is to help the user by understanding their needs, asking follow-up questions, retrieving relevant information, and providing a comprehensive answer based on the user's query, the retrieved documents, and Wikipedia articles so that your answer is safe, actionable, and reliable.\n\n"
+        "Your job is to help the user by understanding their needs, asking follow-up questions, retrieving relevant information, and providing a comprehensive answer based on the user's query, the retrieved documents, and Wikipedia articles so that your answer is safe, actionable, and reliable. In the retrieved documents, there are also images. If you think those images are helpful to support your answer, you can include the image path, which can be found in its original_metadata, in your answer.\n\n"
 
         "Respond only in a clean JSON, following the format in provided examples.\n"
         "Base your answer strictly on the provided docs. "
@@ -319,7 +328,12 @@ def thinking_node(state):
         "Consider making more targeted retrieval calls if the information seems incomplete for the specific symptoms described.\n"
     )
     
-   
+    if consecutive_retrievals >= 2:
+            prompt += (
+                f"\n⚠️ **IMPORTANT**: You have made {consecutive_retrievals} consecutive retrieval calls. "
+                "Consider using Wikipedia to get broader context, general medical background, or cross-reference information "
+                "before making another retrieval call. Wikipedia can provide valuable supplementary information.\n"
+            )
     
     prompt += (
         "Here are the tools you can use:\n"
@@ -342,7 +356,7 @@ def thinking_node(state):
         '  \"wikipedia_query\": \"your search query\"\n'
         '}\n'
 
-        "- **continue conversation**: If you want to ask the user NEW follow-up questions (not ones already asked) or provide information and continue the conversation, use this tool. Here is an example:\n"
+        "- **continue conversation**: If you want to ask the user NEW follow-up questions (not ones already asked) or ask the user to take a picture or provide information and continue the conversation, use this tool. Here is an example:\n"
         "Example response: \"Based on the symptoms you described, this could be a urinary blockage. Can you tell me if your cat is straining to urinate?\"\n\n"
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
@@ -420,31 +434,42 @@ def thinking_node(state):
     if output_for_user_clean.startswith("{") and output_for_user_clean.endswith("}"):
         try:
             parsed = json.loads(output_for_user_clean)
-            print("🔍 DEBUG: inspecting JSON: ", parsed)
+            print(f"🔍 DEBUG: inspecting JSON: ")
+            formatted_json = json.dumps(parsed, indent=2, ensure_ascii=False)
+            print(f"\033[90m{formatted_json}\033[0m")  # cyan color
             next_action = parsed.get("next_action", "").lower()
+            updated_action_history = action_history.copy()
+
             
             if next_action == "retrieve more info":
+                updated_action_history.append("retrieve")
                 queries = parsed.get("queries", [])
-                return {"next_action": "retrieve_more_info", "queries_for_retrieval": queries}
+                return {"next_action": "retrieve_more_info", "queries_for_retrieval": queries, "action_history": updated_action_history}
             elif next_action == "search wikipedia":
                 wikipedia_query = parsed.get("wikipedia_query", "")
-                return {"next_action": "search_wikipedia", "wikipedia_query": wikipedia_query}
+                updated_action_history.append("wikipedia")
+                print(f"\033[90m🔍 DEBUG: Extracted wikipedia_query: '{wikipedia_query}'\033[0m")
+                return {"next_action": "search_wikipedia", "wikipedia_query": wikipedia_query, "action_history": updated_action_history}
             elif "continue conversation" in next_action:
                 response_text = parsed.get("response", "")
+                updated_action_history.append("continue_conversation")
                 ai_response = state.get("ai_response", [])
                 ai_response.append(response_text)
-                return {"next_action": "user_interaction", "ai_response": ai_response}
+                return {"next_action": "user_interaction", "ai_response": ai_response, "action_history": updated_action_history}
                     
         
         except Exception as e:
             print("⚠️ Failed to parse JSON:", e)
+            print(f"\033[90m💥 DEBUG: Raw LLM output: {llm_output}\033[0m")
+            print(f"\033[90m💥 DEBUG: Cleaned output: {output_for_user_clean}\033[0m")
 
 def user_interaction_node(state):
     """Node for continuous user interaction - handles questions and responses"""
     print("7️⃣ User interaction node activated.")
     ai_response = state.get("ai_response", [])
     if ai_response and len(ai_response) > 0:
-        print(f"🤖 {ai_response[-1]}")
+        print(f"\033[92m🤖 {ai_response[-1]}\033[0m")  # Green
+
     
     # Get user input
     user_input = input("Your response (or type '/bye' to exit): ").strip()
@@ -586,36 +611,53 @@ def process_new_docs_node(state):
     }
 
 def wikipedia_search_tool(state):
-    """Search Wikipedia for veterinary information"""
+    """Search Wikipedia for veterinary information using LangChain"""
     query = state.get("wikipedia_query", "")
-    print(f"🔍 Searching Wikipedia for: {query}")
+    print(f"\033[90m🔍 DEBUG: Starting Wikipedia search...\033[0m")
+    print(f"\033[90m🔍 DEBUG: Query received: '{query}'\033[0m")
     
     if not query:
+        print(f"\033[90m⚠️ DEBUG: No query provided, returning early\033[0m")
         return {"next_action": None}
     
     try:
-        # Search Wikipedia API
-        search_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + query.replace(" ", "_")
-        response = requests.get(search_url, timeout=10)
+        print(f"\033[90m🔧 DEBUG: Initializing Wikipedia tool...\033[0m")
+        # Initialize Wikipedia tool using LangChain
+        wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
         
-        if response.status_code == 200:
-            data = response.json()
+        print(f"\033[90m🌐 DEBUG: Executing Wikipedia search for: '{query}'\033[0m")
+        # Search Wikipedia
+        result = wikipedia.run(query)
+        
+        print(f"\033[90m📊 DEBUG: Wikipedia result length: {len(result) if result else 0} characters\033[0m")
+        
+        if result:
+            print(f"\033[90m✅ DEBUG: Wikipedia search successful\033[0m")
+            print(f"\033[90m📝 DEBUG: Result preview: {result[:100]}...\033[0m")
+            
             wikipedia_result = {
-                "title": data.get("title", ""),
-                "summary": data.get("extract", ""),
-                "url": data.get("content_urls", {}).get("desktop", {}).get("page", "")
+                "title": query,  # The search query becomes the title
+                "summary": result,  # The full result from Wikipedia
+                "query": query
             }
             
             existing_results = state.get("wikipedia_results", [])
+            print(f"\033[90m📚 DEBUG: Existing Wikipedia results count: {len(existing_results)}\033[0m")
             existing_results.append(wikipedia_result)
+            print(f"\033[90m📚 DEBUG: Total Wikipedia results after append: {len(existing_results)}\033[0m")
             
-            print(f"📚 Found Wikipedia article: {wikipedia_result['title']}")
+            print(f"📚 Found Wikipedia information for: {query}")
+            print(f"\033[90m🔄 DEBUG: Returning state with wikipedia_results updated\033[0m")
             return {"next_action": None, "wikipedia_results": existing_results}
         else:
-            print(f"⚠️ Wikipedia search failed with status: {response.status_code}")
+            print(f"\033[90m❌ DEBUG: Wikipedia returned empty/None result\033[0m")
+            print(f"⚠️ No Wikipedia results found for: {query}")
             return {"next_action": None}
             
     except Exception as e:
+        print(f"\033[90m💥 DEBUG: Exception caught in wikipedia_search_tool\033[0m")
+        print(f"\033[90m💥 DEBUG: Exception type: {type(e).__name__}\033[0m")
+        print(f"\033[90m💥 DEBUG: Exception details: {str(e)}\033[0m")
         print(f"⚠️ Error searching Wikipedia: {e}")
         return {"next_action": None}
 
@@ -794,7 +836,7 @@ def main():
     
     try:
         # Start the conversation
-        result = graph.invoke(initial_state, {"configurable": {"thread_id": thread_id}})
+        result = graph.invoke(initial_state, {"configurable": {"thread_id": thread_id, "recursion_limit": 100}})
     except Exception as e:
         print(f"⚠️ An error occurred: {e}")
         print("The conversation has ended.")
