@@ -9,48 +9,23 @@ If you want to provide an image, enter the file path (or press Enter to skip):
 3️⃣ Query decomposition complete:  ['Serotonin Syndrome', 'Causes of Serotonin Syndrome in Cats', 'Accidental antidepressant ingestion as a cause'] ...
 4️⃣ Retrieved 39 unique documents for 11 queries.
 5️⃣ Found 13 relevant documents out of 39 retrieved documents.
+
 6️⃣ Thinking about the user's query...
 Prompt length:  8772
-🔍 DEBUG: inspecting JSON: 
 {
   "thinking": "The user is asking about serotonin syndrome in cats from antidepressants. The provided documents mention drug toxicity symptoms (vomiting, diarrhea, etc.) and Venlafaxine (Effexor) ingestion risks but do not explicitly address serotonin syndrome. To answer safely, I need to cross-reference veterinary handbook info with general medical knowledge on serotonin syndrome in cats. A Wikipedia search will provide foundational info, while targeted retrieval can confirm feline-specific symptoms.",
   "next_action": "search wikipedia",
   "wikipedia_query": "serotonin syndrome in cats"
 }
-🔍 DEBUG: Extracted wikipedia_query: 'serotonin syndrome in cats'
-🔍 DEBUG: Starting Wikipedia search...
-🔍 DEBUG: Query received: 'serotonin syndrome in cats'
-🔧 DEBUG: Initializing Wikipedia tool...
-🌐 DEBUG: Executing Wikipedia search for: 'serotonin syndrome in cats'
-📊 DEBUG: Wikipedia result length: 4000 characters
-✅ DEBUG: Wikipedia search successful
-📝 DEBUG: Result preview: Page: Feline hyperesthesia syndrome
-Summary: First reported in 1980 by J. Tuttle in a scientific art...
-📚 DEBUG: Existing Wikipedia results count: 0
-📚 DEBUG: Total Wikipedia results after append: 1
-📚 Found Wikipedia information for: serotonin syndrome in cats
-🔄 DEBUG: Returning state with wikipedia_results updated
+
 6️⃣ Thinking about the user's query...
 Prompt length:  9373
-🔍 DEBUG: inspecting JSON: 
 {
   "thinking": "The user is asking about serotonin syndrome in cats from antidepressant ingestion. The veterinary handbook documents mention drug toxicity symptoms (vomiting, diarrhea, etc.) and Venlafaxine (an SNRI) being attractive to cats. However, there is no direct mention of serotonin syndrome. The Wikipedia article on serotonin syndrome in cats is incomplete. To provide accurate information, I need to search Wikipedia for confirmed symptoms and mechanisms of serotonin syndrome in cats.",
   "next_action": "search wikipedia",
   "wikipedia_query": "serotonin syndrome in cats"
 }
-🔍 DEBUG: Extracted wikipedia_query: 'serotonin syndrome in cats'
-🔍 DEBUG: Starting Wikipedia search...
-🔍 DEBUG: Query received: 'serotonin syndrome in cats'
-🔧 DEBUG: Initializing Wikipedia tool...
-🌐 DEBUG: Executing Wikipedia search for: 'serotonin syndrome in cats'
-📊 DEBUG: Wikipedia result length: 4000 characters
-✅ DEBUG: Wikipedia search successful
-📝 DEBUG: Result preview: Page: Feline hyperesthesia syndrome
-Summary: First reported in 1980 by J. Tuttle in a scientific art...
-📚 DEBUG: Existing Wikipedia results count: 1
-📚 DEBUG: Total Wikipedia results after append: 2
-📚 Found Wikipedia information for: serotonin syndrome in cats
-🔄 DEBUG: Returning state with wikipedia_results updated
+
 6️⃣ Thinking about the user's query...
 Prompt length:  9935
 🔍 DEBUG: inspecting JSON: 
@@ -66,9 +41,9 @@ Retrieving more information for queries:  ['serotonin syndrome in cats', 'antide
 📊 Added 3 new documents. Total: 42 documents.
 🔍 Processing 3 newly retrieved documents for relevancy...
 ✅ Found 0 relevant documents from new retrieval. Total relevant: 13
+
 6️⃣ Thinking about the user's query...
 Prompt length:  9935
-🔍 DEBUG: inspecting JSON: 
 {
   "thinking": "The user is asking about serotonin syndrome in cats from antidepressant ingestion. The veterinary handbook documents mention drug toxicity symptoms (vomiting, tremors, seizures) and Venlafaxine (a SNRI) being attractive to cats. Wikipedia articles discuss feline hyperesthesia syndrome (similar symptoms but distinct condition). No direct mention of serotonin syndrome in cats. Need to clarify if the symptoms align and advise veterinary consultation.",
   "next_action": "continue conversation",
