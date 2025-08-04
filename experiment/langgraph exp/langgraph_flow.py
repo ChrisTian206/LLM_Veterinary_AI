@@ -15,11 +15,13 @@ from langgraph.graph import StateGraph, START, END
 from typing_extensions import TypedDict
 from typing import Optional, List, Dict, Any
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.tools import WikipediaQueryRun
-from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_chroma import Chroma
 from unified_retriever import UnifiedRetriever
+from tavily import TavilyClient
+from langchain_chroma import Chroma
+from unified_retriever import UnifiedRetriever
+from tavily import TavilyClient
 
 
 class GraphState(TypedDict):
@@ -51,8 +53,8 @@ class GraphState(TypedDict):
     error: Optional[str]
     latest_user_input: Optional[str]
     retrieval_count: Optional[int]
-    wikipedia_query: Optional[str]
-    wikipedia_results: Optional[List[Dict[str, Any]]]
+    tavily_query: Optional[str]
+    web_search_results_log: Optional[List[Dict[str, Any]]]
     new_docs_count: Optional[int]
     action_history: Optional[List[str]]
     
@@ -316,9 +318,9 @@ def thinking_node(state):
 
     prompt = (
         "You are a veterinary assistant AI helping pet owners with at-home vet care. The user is a pet owner with little veterinary knowledge. "
-        "You are providing a at-home care advice based on book 'Cat Owners' Home Veterinary Handbook by Debra M. Eldredge'. This entire book and wikipedia are available to you, and you can retrieve information from the book using the retrieve tool and search on Wikipedia using the wikipedia tool."
+        "You are providing a at-home care advice based on book 'Cat Owners' Home Veterinary Handbook by Debra M. Eldredge'. This entire book and trusted web sources are available to you, and you can retrieve information from the book using the retrieve tool and search trusted veterinary websites using the web search tool."
 
-        "Your job is to help the user by understanding their needs, asking follow-up questions, retrieving relevant information, and providing a comprehensive answer based on the user's query, the retrieved documents, and Wikipedia articles so that your answer is safe, actionable, and reliable. In the retrieved documents, there are also images. \n\n"
+        "Your job is to help the user by understanding their needs, asking follow-up questions, retrieving relevant information, and providing a comprehensive answer based on the user's query, the retrieved documents, and web search results so that your answer is safe, actionable, and reliable. In the retrieved documents, there are also images. \n\n"
 
         "Do not refer to internal document numbers or sources such as “document 2” or “document 10” in your response. Instead, explain the guidance directly as if you are speaking to the pet owner. However, if you think those images are helpful to support your answer, you can include the image path, which can be found in its original_metadata, in your answer. "
 
@@ -333,8 +335,8 @@ def thinking_node(state):
     if consecutive_retrievals >= 2:
             prompt += (
                 f"\n⚠️ **IMPORTANT**: You have made {consecutive_retrievals} consecutive retrieval calls. "
-                "Consider using Wikipedia to get broader context, general medical background, or cross-reference information "
-                "before making another retrieval call. Wikipedia can provide valuable supplementary information.\n"
+                "Consider using web search to get broader context, current medical information, or cross-reference information from trusted veterinary sources "
+                "before making another retrieval call. Web search can provide valuable supplementary and up-to-date information.\n"
             )
     
     prompt += (
@@ -349,13 +351,13 @@ def thinking_node(state):
         '  \"queries\": [\"query1\", \"query2\"],\n'
         '}\n'
 
-        "- **search wikipedia**: If you need general background information or want to cross-reference veterinary conditions, use this tool to search Wikipedia. Here is an example:\n"
-        "Example query: \"feline urinary tract infection\"\n\n"
+        "- **search web**: If you need current information, general background, or want to cross-reference veterinary conditions from trusted sources, use this tool to search the web using Tavily. Here is an example:\n"
+        "Example query: \"feline urinary tract infection symptoms treatment\"\n\n"
         "Output the next action and query in this format:\n"
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
-        '  \"next_action\": \"search wikipedia\",\n'
-        '  \"wikipedia_query\": \"your search query\"\n'
+        '  \"next_action\": \"search web\",\n'
+        '  \"tavily_query\": \"your search query\"\n'
         '}\n'
 
         "- **continue conversation**: If you want to ask the user NEW follow-up questions (not ones already asked) or ask the user to take a picture or provide information and continue the conversation, use this tool. Here is an example:\n"
@@ -394,12 +396,25 @@ def thinking_node(state):
             summary = doc.get('summary', '')
             prompt += f"{i+1}. [TEXT] Summary: {summary} (id: {doc_id})\n"
 
-    # Add Wikipedia results if available
-    wikipedia_results = state.get("wikipedia_results", [])
-    if wikipedia_results:
-        prompt += "\nHere are relevant Wikipedia articles:\n"
-        for i, result in enumerate(wikipedia_results):
-            prompt += f"{i+1}. [WIKIPEDIA] Title: {result.get('title', '')}\nSummary: {result.get('summary', '')[:500]}...\n"
+    # Add web search results if available
+    web_search_results = state.get("web_search_results", [])
+    web_search_log = state.get("web_search_results_log", [])
+    
+    if web_search_results:
+        prompt += "\nHere are relevant web search results:\n"
+        for i, result in enumerate(web_search_results):
+            prompt += f"{i+1}. [WEB] Title: {result.get('title', '')}\nURL: {result.get('url', '')}\nContent: {result.get('content', '')[:500]}...\nScore: {result.get('score', 0)}\n"
+    
+    # Add the most recent web search log entry if available
+    if web_search_log:
+        latest_search = web_search_log[-1]
+        prompt += f"\n📊 Latest Web Search Summary:\n"
+        prompt += f"Query: {latest_search.get('query', '')}\n"
+        prompt += f"Found {latest_search.get('results_count', 0)} results\n"
+        prompt += f"Top sources: "
+        top_sources = [result.get('url', 'unknown') for result in latest_search.get('results', [])[:2]]
+        prompt += f"{', '.join(top_sources)}\n"
+        prompt += "\n**IMPORTANT**: When providing your response, make sure to reference these web search sources for credibility. Mention the specific websites or sources you found this information from.\n"
 
     # Add conversation history only if not a new topic
     q_list = state.get("ai_response", [])
@@ -448,12 +463,11 @@ def thinking_node(state):
                 queries = parsed.get("queries", [])
                 print(f"📖 Checking Books for: {queries}")
                 return {"next_action": "retrieve_more_info", "queries_for_retrieval": queries, "action_history": updated_action_history}
-            elif next_action == "search wikipedia":
-                wikipedia_query = parsed.get("wikipedia_query", "")
-                updated_action_history.append("wikipedia")
-                # print(f"\033[90m🔍 DEBUG: Extracted wikipedia_query: '{wikipedia_query}'\033[0m")
-                print(f"🌐 Searching Online for: {wikipedia_query}")
-                return {"next_action": "search_wikipedia", "wikipedia_query": wikipedia_query, "action_history": updated_action_history}
+            elif next_action == "search web":
+                tavily_query = parsed.get("tavily_query", "")
+                updated_action_history.append("web_search")
+                print(f"🌐 Searching Web for: {tavily_query}")
+                return {"next_action": "search_web", "tavily_query": tavily_query, "action_history": updated_action_history}
             elif "continue conversation" in next_action:
                 response_text = parsed.get("response", "")
                 updated_action_history.append("continue_conversation")
@@ -620,55 +634,97 @@ def process_new_docs_node(state):
         "relevant_docs": combined_relevant
     }
 
-def wikipedia_search_tool(state):
-    """Search Wikipedia for veterinary information using LangChain"""
-    query = state.get("wikipedia_query", "")
-    # print(f"\033[90m🔍 DEBUG: Starting Wikipedia search...\033[0m")
-    # print(f"\033[90m🔍 DEBUG: Query received: '{query}'\033[0m")
+def tavily_search_tool(state):
+    """Search web using Tavily for veterinary information"""
+    query = state.get("tavily_query", "")
     
     if not query:
-        # print(f"\033[90m⚠️ DEBUG: No query provided, returning early\033[0m")
         return {"next_action": None}
     
     try:
-        # print(f"\033[90m🔧 DEBUG: Initializing Wikipedia tool...\033[0m")
-        # Initialize Wikipedia tool using LangChain
-        wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
+        # Initialize Tavily client (you'll need to set your API key)
+        tavily_client = TavilyClient(api_key="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")
         
-        # print(f"\033[90m🌐 DEBUG: Executing Wikipedia search for: '{query}'\033[0m")
-        # Search Wikipedia
-        result = wikipedia.run(query)
+        # Enhanced query for veterinary context
+        veterinary_query = f"veterinary {query} cats feline health"
         
-        # print(f"\033[90m📊 DEBUG: Wikipedia result length: {len(result) if result else 0} characters\033[0m")
+        print(f"🌐 Searching web for: {veterinary_query}")
         
-        if result:
-            # print(f"\033[90m✅ DEBUG: Wikipedia search successful\033[0m")
-            # print(f"\033[90m📝 DEBUG: Result preview: {result[:100]}...\033[0m")
+        # Search using Tavily
+        search_results = tavily_client.search(
+            query=veterinary_query,
+            search_depth="advanced",
+            max_results=5,
+            include_domains=[
+                "https://www.avma.org/",
+                "https://www.merckvetmanual.com/",
+                "https://www.vet.cornell.edu/",
+                "https://www.vetmed.ucdavis.edu/",
+                "https://vcahospitals.com/know-your-pet",
+                "https://www.petmd.com/",
+                "https://www.aspca.org/pet-care",
+                "https://www.petpoisonhelpline.com/",
+                "https://www.wormsandgermsblog.com/",
+                "https://www.vin.com/"
+                ],
+            exclude_domains=["reddit.com", "quora.com","wikipedia.org"],
+            include_answer=True,
+            include_raw_content=True
+        )
+        
+        if search_results and search_results.get("results"):
+            # Process multiple results
+            processed_results = []
             
-            wikipedia_result = {
-                "title": query,  # The search query becomes the title
-                "summary": result,  # The full result from Wikipedia
-                "query": query
+            for result in search_results["results"][:3]:  # Take top 3 results
+                processed_result = {
+                    "title": result.get("title", ""),
+                    "url": result.get("url", ""),
+                    "content": result.get("content", ""),
+                    "score": result.get("score", 0),
+                    "query": query
+                }
+                processed_results.append(processed_result)
+            
+            # Add Tavily's direct answer if available
+            if search_results.get("answer"):
+                direct_answer = {
+                    "title": f"Direct Answer: {query}",
+                    "url": "tavily_direct_answer",
+                    "content": search_results["answer"],
+                    "score": 1.0,
+                    "query": query
+                }
+                processed_results.insert(0, direct_answer)  # Put direct answer first
+            
+            existing_results = state.get("web_search_results", [])
+            existing_results.extend(processed_results)
+            
+            # Create a log entry for this search
+            log_entry = {
+                "query": query,
+                "veterinary_query": veterinary_query,
+                "timestamp": str(uuid.uuid4())[:8],  # Simple timestamp-like ID
+                "results_count": len(processed_results),
+                "results": processed_results
             }
             
-            existing_results = state.get("wikipedia_results", [])
-            # print(f"\033[90m📚 DEBUG: Existing Wikipedia results count: {len(existing_results)}\033[0m")
-            existing_results.append(wikipedia_result)
-            # print(f"\033[90m📚 DEBUG: Total Wikipedia results after append: {len(existing_results)}\033[0m")
+            # Add to the log
+            existing_log = state.get("web_search_results_log", [])
+            existing_log.append(log_entry)
             
-            print(f"📚 Found Wikipedia information for: {query}")
-            # print(f"\033[90m🔄 DEBUG: Returning state with wikipedia_results updated\033[0m")
-            return {"next_action": None, "wikipedia_results": existing_results}
+            print(f"📚 Found {len(processed_results)} web search results for: {query}")
+            return {
+                "next_action": None, 
+                "web_search_results": existing_results,
+                "web_search_results_log": existing_log
+            }
         else:
-            # print(f"\033[90m❌ DEBUG: Wikipedia returned empty/None result\033[0m")
-            # print(f"⚠️ No Wikipedia results found for: {query}")
+            print(f"⚠️ No web search results found for: {query}")
             return {"next_action": None}
             
     except Exception as e:
-        print(f"\033[90m💥 DEBUG: Exception caught in wikipedia_search_tool\033[0m")
-        print(f"\033[90m💥 DEBUG: Exception type: {type(e).__name__}\033[0m")
-        print(f"\033[90m💥 DEBUG: Exception details: {str(e)}\033[0m")
-        print(f"⚠️ Error searching Wikipedia: {e}")
+        print(f"⚠️ Error searching web: {e}")
         return {"next_action": None}
 
 def final_answer_node(state):
@@ -689,7 +745,7 @@ def build_graph():
     builder.add_node("thinking", thinking_node)
     builder.add_node("retrieval_tool", retrieval_tool)
     builder.add_node("process_new_docs_node", process_new_docs_node)  # New node
-    builder.add_node("wikipedia_search_tool", wikipedia_search_tool)
+    builder.add_node("tavily_search_tool", tavily_search_tool)
     builder.add_node("user_interaction_node", user_interaction_node)
     builder.add_node("final_answer_node", final_answer_node)
 
@@ -721,8 +777,8 @@ def build_graph():
         action = state.get("next_action")
         if action == "retrieve_more_info":
             return "retrieval_tool"
-        elif action == "search_wikipedia":
-            return "wikipedia_search_tool"
+        elif action == "search_web":
+            return "tavily_search_tool"
         elif action == "user_interaction":
             return "user_interaction_node"
         else:
@@ -733,7 +789,7 @@ def build_graph():
         thinking_router,
         {
             "retrieval_tool": "retrieval_tool",
-            "wikipedia_search_tool": "wikipedia_search_tool",
+            "tavily_search_tool": "tavily_search_tool",
             "user_interaction_node": "user_interaction_node",
         }
     )
@@ -771,7 +827,7 @@ def build_graph():
     )
     
     builder.add_edge("process_new_docs_node", "thinking")
-    builder.add_edge("wikipedia_search_tool", "thinking")
+    builder.add_edge("tavily_search_tool", "thinking")
     builder.add_edge("final_answer_node", "user_interaction_node")
     
     graph = builder.compile(checkpointer=checkpointer)
@@ -840,7 +896,8 @@ def main():
         "image_path": image_path if image_path else None,
         "loop_count": 0,
         "retrieval_count": 0,
-        "wikipedia_results": [],
+        "web_search_results": [],
+        "web_search_results_log": [],
         "user_responses": [],
     }
     
