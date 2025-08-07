@@ -1,133 +1,48 @@
-# Comprehensive Requirements for LLM Veterinary AI Project
-# Generated from analysis of all Python files and Jupyter notebooks
+# Core LLM Veterinary AI Requirements
+# Based on actual code analysis
 
-# Core LangChain Dependencies
-langchain>=0.2.0
+# Core LangChain and LangGraph
 langchain-core>=0.2.0
+langchain-ollama>=0.1.0
 langchain-experimental>=0.0.60
 langchain-chroma>=0.1.0
-langchain-ollama>=0.1.0
+langchain-huggingface>=0.1.0
 langchain-community>=0.0.20
+langgraph>=0.1.0
 
-# LLM and Local AI Models
+# Local LLM Inference
 ollama>=0.1.6
 
 # Vector Database and Embeddings
 chromadb>=0.4.24
 open-clip-torch>=2.20.0
 
-# Transformers and NLP Models
-transformers>=4.40.0
-sentence-transformers>=2.7.0
-torch>=2.0.0
-torchvision>=0.15.0
-
-# Reranking Models
-rerankers>=0.3.0
-# For GPU-enabled monoQwen support (optional): rerankers[monovlm]
-qwen-vl-utils>=0.0.1
-
-# Document Processing and PDF Handling
-unstructured[local-inference,pdf]>=0.10.18
-pdfminer.six>=20221105
-
-# Data Science and ML Libraries
-numpy>=1.24.0
-pandas>=2.0.0
-scikit-learn>=1.2.0
-matplotlib>=3.7.0
+# Document Processing
+unstructured[pdf]>=0.10.18
+pydantic>=2.0.0
 
 # Image Processing
 Pillow>=10.0.0
 
-# HTTP Requests and Web
+# Web Search (optional - for Tavily integration)
+tavily-python>=0.3.0
+
+# Utilities
 requests>=2.28.0
-
-# Data Models and Validation
-pydantic>=2.0.0
-
-# Type Extensions
+python-dotenv>=1.0.0
 typing-extensions>=4.5.0
 
-# LLaVA Dependencies (for vision models)
-protobuf>=4.25.0
-
-# JSON and Data Handling
-# (json is built-in, no external dependency needed)
-
-# System and OS utilities
-# (os, argparse, uuid, re, io, base64 are built-in)
-
 # Development and Notebook Support
-notebook>=6.5.0
 jupyter>=1.0.0
+notebook>=6.5.0
 ipython>=8.10.0
-ipykernel>=6.0.0
 
-# LangSmith (for tracing - optional)
-langsmith>=0.1.0
+# Data Science Support
+numpy>=1.24.0
+pandas>=2.0.0
 
-# Web Search and External APIs (if needed)
-# tavily-python>=0.3.0  # Uncomment if using Tavily for web search
-
-# Graph and Workflow Management
-langgraph>=0.1.0
-
-# Cross-encoder models for reranking
-# sentence-transformers includes CrossEncoder support
-
-# GPU Acceleration (optional)
-# accelerate>=0.20.0  # Uncomment for GPU acceleration
-# torch-audio>=2.0.0  # Uncomment if audio processing needed
-
-# Alternative embedding models (optional)
-# GPT4AllEmbeddings is available through langchain-community
-
-# Environment and Configuration
-python-dotenv>=1.0.0  # For environment variable management
-
-# File I/O utilities
-glob2>=0.7  # Enhanced glob functionality (though glob is built-in)
-
-# Additional utilities that may be needed
-tqdm>=4.64.0  # Progress bars
-colorama>=0.4.4  # Colored terminal output
-
-# XML/HTML processing (for unstructured)
-lxml>=4.9.0
-beautifulsoup4>=4.11.0
-
-# PDF processing dependencies
+# Additional Dependencies for PDF Processing
 pypdf>=3.0.0
-pdfplumber>=0.9.0
 
-# OCR capabilities (optional)
-# pytesseract>=0.3.10  # Uncomment if OCR needed
-# easyocr>=1.7.0       # Uncomment if OCR needed
-
-# Audio processing (if extending to audio analysis)
-# librosa>=0.10.0      # Uncomment if audio analysis needed
-
-# Additional AI/ML utilities
-# openai>=1.0.0        # Uncomment if using OpenAI APIs
-# anthropic>=0.3.0     # Uncomment if using Anthropic APIs
-
-# Memory optimization
-# faiss-cpu>=1.7.0     # Uncomment for efficient similarity search
-# faiss-gpu>=1.7.0     # Use instead of faiss-cpu if GPU available
-
-# Async support
-# aiohttp>=3.8.0       # Uncomment if async HTTP needed
-# asyncio              # Built-in, no external dependency
-
-# Testing (development)
-# pytest>=7.0.0        # Uncomment for testing
-# pytest-asyncio>=0.21.0  # Uncomment for async testing
-
-# Documentation (development)
-# sphinx>=5.0.0        # Uncomment for documentation generation
-# sphinx-rtd-theme>=1.0.0  # Uncomment for RTD theme
-
-# Version pinning note:
-# Some versions are pinned to ensure compatibility
-# Upgrade carefully and test thoroughly when updating major versions
+# JSON and data handling (built-in modules)
+# json, os, sys, uuid, re are built-in Python modules

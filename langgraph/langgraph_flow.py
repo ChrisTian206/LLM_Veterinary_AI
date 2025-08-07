@@ -3,9 +3,13 @@ import os
 import uuid
 import requests
 import json
+from dotenv import load_dotenv
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../')))
 import ollama
 import re
+
+# Load environment variables
+load_dotenv()
 
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
@@ -642,8 +646,13 @@ def tavily_search_tool(state):
         return {"next_action": None}
     
     try:
-        # Initialize Tavily client (you'll need to set your API key)
-        tavily_client = TavilyClient(api_key="")
+        # Initialize Tavily client using environment variable
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            print("⚠️ TAVILY_API_KEY not found in environment variables")
+            return {"next_action": None}
+        
+        tavily_client = TavilyClient(api_key=api_key)
         
         # Enhanced query for veterinary context
         veterinary_query = f"veterinary {query} cats feline health"

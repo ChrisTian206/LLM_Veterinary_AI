@@ -21,7 +21,6 @@ from textbook_to_db.unified_retriever import UnifiedRetriever
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_experimental.text_splitter import SemanticChunker
 
-
 class Element(BaseModel):
     type: str
     text: Any
