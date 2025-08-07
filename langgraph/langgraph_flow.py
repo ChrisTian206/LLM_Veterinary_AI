@@ -17,10 +17,10 @@ from typing import Optional, List, Dict, Any
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_chroma import Chroma
-from unified_retriever import UnifiedRetriever
+from textbook_to_db.unified_retriever import UnifiedRetriever
 from tavily import TavilyClient
 from langchain_chroma import Chroma
-from unified_retriever import UnifiedRetriever
+from textbook_to_db.unified_retriever import UnifiedRetriever
 from tavily import TavilyClient
 
 
@@ -643,7 +643,7 @@ def tavily_search_tool(state):
     
     try:
         # Initialize Tavily client (you'll need to set your API key)
-        tavily_client = TavilyClient(api_key="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")
+        tavily_client = TavilyClient(api_key="")
         
         # Enhanced query for veterinary context
         veterinary_query = f"veterinary {query} cats feline health"

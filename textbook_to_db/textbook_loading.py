@@ -17,7 +17,7 @@ from langchain_chroma import Chroma
 from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_core.documents import Document
 
-from unified_retriever import UnifiedRetriever
+from textbook_to_db.unified_retriever import UnifiedRetriever
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_experimental.text_splitter import SemanticChunker
 
@@ -427,7 +427,7 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, image_path
     from langchain_chroma import Chroma
     from langchain_core.documents import Document
     import uuid, os, json
-    from unified_retriever import UnifiedRetriever
+    from textbook_to_db.unified_retriever import UnifiedRetriever
 
     text_embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")   
     open_clip_embeddings = OpenCLIPEmbeddings(model_name="ViT-g-14", checkpoint="laion2b_s34b_b88k")
