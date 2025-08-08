@@ -4,13 +4,13 @@ import uuid
 import requests
 import json
 from dotenv import load_dotenv
-sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../')))
+
 import ollama
 import re
 
 # Load environment variables
 load_dotenv()
-
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../textbook_to_db'))
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
@@ -21,12 +21,8 @@ from typing import Optional, List, Dict, Any
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_chroma import Chroma
-from textbook_to_db.unified_retriever import UnifiedRetriever
+from unified_retriever import UnifiedRetriever
 from tavily import TavilyClient
-from langchain_chroma import Chroma
-from textbook_to_db.unified_retriever import UnifiedRetriever
-from tavily import TavilyClient
-
 
 class GraphState(TypedDict):
     text_query: str
@@ -61,7 +57,8 @@ class GraphState(TypedDict):
     web_search_results_log: Optional[List[Dict[str, Any]]]
     new_docs_count: Optional[int]
     action_history: Optional[List[str]]
-    
+    search_context: Optional[str]  # New field for search context
+
 def query_handler(state):
     text_query = state.get("text_query", "")
     image_path = state.get("image_path", None)
@@ -242,23 +239,47 @@ def query_decomposition(state):
     return {"queries_for_retrieval": decomposed_queries}
 
 def contextual_retrieval_node(state):
+    # Get existing documents to avoid duplicates
+    existing_docs = state.get("retrieved_docs", [])
     seen_doc_ids = set()
-    unique_docs = []
+    
+    # Track existing document IDs
+    for doc in existing_docs:
+        doc_id = doc.get('doc_id') or doc.get('summary_metadata', {}).get('doc_id')
+        if doc_id:
+            seen_doc_ids.add(doc_id)
+    
+    # Start with existing documents
+    all_docs = existing_docs.copy()
+    new_docs_count = 0
     
     for query in state['queries_for_retrieval']:
-        results = retriever.retrieve_multi_modal(query, k=5, )
+        results = retriever.retrieve_multi_modal(query, k=5)
         for res in results:
             doc_id = res.get('doc_id') or res.get('summary_metadata', {}).get('doc_id')
             if doc_id and doc_id not in seen_doc_ids:
                 seen_doc_ids.add(doc_id)
-                unique_docs.append(res)
-    print(f"4️⃣ Retrieved {len(unique_docs)} unique documents for {len(state['queries_for_retrieval'])} queries.")
-    return {"retrieved_docs": unique_docs}
+                all_docs.append(res)
+                new_docs_count += 1
+    
+    print(f"4️⃣ Retrieved {new_docs_count} new documents for {len(state['queries_for_retrieval'])} queries. Total: {len(all_docs)} documents.")
+    
+    # Increment retrieval count
+    retrieval_count = state.get("retrieval_count", 0) + 1
+    
+    return {
+        "queries_for_retrieval": [],
+        "retrieved_docs": all_docs, 
+        "retrieval_count": retrieval_count,
+        "new_docs_count": new_docs_count      
+    }
 
 def relevancy_check_node(state):
     relevant_docs = []
     query = state.get('refined_query')
+    search_context = state.get('search_context', '')
     docs = state.get('retrieved_docs')
+    
     for doc in docs:
         modality = doc.get('modality') or (doc.get('original_metadata') or {}).get('type')
         summary = doc.get('summary', '')
@@ -269,15 +290,31 @@ def relevancy_check_node(state):
             doc_desc = f"[TABLE] Summary: {summary}"
         else:
             doc_desc = f"[TEXT] Summary: {summary}"
-        prompt = (
-            "You are a veterinary assistant AI. You are checking if a document is relevant and useful for answering a user's veterinary question. "
-            "The document may be a summary of a textbook passage, a table, or an image (with a summary). "
-            "Only say YES if the document contains information that would help answer the user's question, or provides context, steps, or background. "
-            "If the document is off-topic, generic, or not helpful, say NO.\n\n"
-            f"User query: {query}\nDocument: {doc_desc}\n\n"
-            "Is this document relevant and useful for answering the query?"
-            "Respond with only YES or NO."
-        )
+        
+        # Enhanced prompt with search context
+        if search_context:
+            prompt = (
+                "You are a veterinary assistant AI. You are checking if a document is relevant and useful for answering a user's veterinary question. "
+                "The document may be a summary of a textbook passage, a table, or an image (with a summary). "
+                "Only say YES if the document contains information that would help answer the user's question, or provides context, steps, or background. "
+                "If the document is off-topic, generic, or not helpful, say NO.\n\n"
+                f"User query: {query}\n"
+                f"Specific information needed: {search_context}\n"
+                f"Document: {doc_desc}\n\n"
+                "Does this document help with the specific information need described above?"
+                "Respond with only YES or NO."
+            )
+        else:
+            prompt = (
+                "You are a veterinary assistant AI. You are checking if a document is relevant and useful for answering a user's veterinary question. "
+                "The document may be a summary of a textbook passage, a table, or an image (with a summary). "
+                "Only say YES if the document contains information that would help answer the user's question, or provides context, steps, or background. "
+                "If the document is off-topic, generic, or not helpful, say NO.\n\n"
+                f"User query: {query}\nDocument: {doc_desc}\n\n"
+                "Is this document relevant and useful for answering the query?"
+                "Respond with only YES or NO."
+            )
+        
         messages = [{"role": "user", "content": prompt}]
         response = ollama.chat(
             model="mistral:instruct",
@@ -289,7 +326,12 @@ def relevancy_check_node(state):
             relevant_docs.append(doc)
     
     print(f"5️⃣ Found {len(relevant_docs)} relevant documents out of {len(docs)} retrieved documents.")
-    return {"relevant_docs": relevant_docs}
+    
+    # Reset search context after relevancy check
+    return {
+        "relevant_docs": relevant_docs,
+        "search_context": ""  # Reset to empty
+    }
 
 def extract_json_block(text):
     """Extracts the first {...} block from text, removing code fences and extra text."""
@@ -309,7 +351,7 @@ def extract_json_block(text):
 def thinking_node(state):
     user_query = state.get("text_query", "")
     image_summary = state.get("image_summary", "")
-    relevant_docs = state.get("relevant_docs", [])[:10]
+    relevant_docs = state.get("relevant_docs", [])[:5]
     action_history = state.get("action_history", [])
     latest_user_input = state.get("latest_user_input", "")
     
@@ -320,13 +362,13 @@ def thinking_node(state):
         else:
             break
 
-    prompt = (
+    prompt = """
         "You are a veterinary assistant AI helping pet owners with at-home vet care. The user is a pet owner with little veterinary knowledge. "
         "You are providing a at-home care advice based on book 'Cat Owners' Home Veterinary Handbook by Debra M. Eldredge'. This entire book and trusted web sources are available to you, and you can retrieve information from the book using the retrieve tool and search trusted veterinary websites using the web search tool."
 
         "Your job is to help the user by understanding their needs, asking follow-up questions, retrieving relevant information, and providing a comprehensive answer based on the user's query, the retrieved documents, and web search results so that your answer is safe, actionable, and reliable. In the retrieved documents, there are also images. \n\n"
 
-        "Do not refer to internal document numbers or sources such as “document 2” or “document 10” in your response. Instead, explain the guidance directly as if you are speaking to the pet owner. However, if you think those images are helpful to support your answer, you can include the image path, which can be found in its original_metadata, in your answer. "
+        "Do not refer to internal document numbers or sources such as "document 2" or "document 10" in your response. Instead, explain the guidance directly as if you are speaking to the pet owner. However, if you think those images are helpful to support your answer, you can include the image path, which can be found in its original_metadata, in your answer. "
 
         "Respond only in a clean JSON, following the format in provided examples.\n"
         "Base your answer strictly on the provided docs. "
@@ -334,7 +376,7 @@ def thinking_node(state):
         
         "You should be thorough and make multiple retrieval calls or wikipedia search to gather comprehensive information before answering."
         "Consider making more targeted retrieval calls if the information seems incomplete for the specific symptoms described.\n"
-    )
+    """
     
     if consecutive_retrievals >= 2:
             prompt += (
@@ -353,6 +395,7 @@ def thinking_node(state):
         '  \"thinking\": \"your reasoning\",\n'
         '  \"next_action\": \"retrieve more info\",\n'
         '  \"queries\": [\"query1\", \"query2\"],\n'
+        '  \"search_context\": \"Specific explanation of what information is needed and why - e.g., Need detailed symptoms and diagnostic procedures for urinary blockage to provide comprehensive guidance on when to seek emergency care\"\n'
         '}\n'
 
         "- **search web**: If you need current information, general background, or want to cross-reference veterinary conditions from trusted sources, use this tool to search the web using Tavily. Here is an example:\n"
@@ -361,7 +404,8 @@ def thinking_node(state):
         '{\n'
         '  \"thinking\": \"your reasoning\",\n'
         '  \"next_action\": \"search web\",\n'
-        '  \"tavily_query\": \"your search query\"\n'
+        '  \"tavily_query\": \"your search query\",\n'
+        '  \"search_context\": \"Explanation of what current/supplementary info is needed - e.g., Need current veterinary treatment protocols and emergency care guidelines from trusted sources\"\n'
         '}\n'
 
         "- **continue conversation**: If you want to ask the user NEW follow-up questions (not ones already asked) or ask the user to take a picture or provide information and continue the conversation, use this tool. Here is an example:\n"
@@ -374,6 +418,7 @@ def thinking_node(state):
 
     )
 
+    # ...existing code for adding query, image summary, documents...
     prompt += f"Original user query: {user_query}\n"
     if latest_user_input:
         prompt += f"Latest user input: {latest_user_input}\n"
@@ -387,7 +432,6 @@ def thinking_node(state):
         doc_id = doc.get('doc_id') or (doc.get('original_metadata') or {}).get('doc_id')
         if modality in ('image', 'image_summary'):
             original_metadata = doc.get('original_metadata') or {}
-            import json
             metadata_str = json.dumps(original_metadata, indent=2, ensure_ascii=False)
             prompt += (
                 f"{i+1}. [IMAGE] The following is the original_metadata for this image (summary and image_path are included):\n"
@@ -450,14 +494,22 @@ def thinking_node(state):
     
     output_for_user = re.sub(r"<think>.*?</think>", "", llm_output, flags=re.DOTALL | re.IGNORECASE).strip()
     output_for_user_clean = extract_json_block(output_for_user)
-    state["intermediate_thoughts"] = state.get("intermediate_thoughts", []) + [reasoning]
-
+    
+    # Extract and store thinking field from JSON
+    intermediate_thoughts = state.get("intermediate_thoughts", [])
+    
     if output_for_user_clean.startswith("{") and output_for_user_clean.endswith("}"):
         try:
             parsed = json.loads(output_for_user_clean)
             formatted_json = json.dumps(parsed, indent=2, ensure_ascii=False)
             print("🧠: ")
             print(f"\033[90m{formatted_json}\033[0m")  # cyan color
+            
+            # Extract thinking field and add to intermediate thoughts
+            thinking_content = parsed.get("thinking", "")
+            if thinking_content:
+                intermediate_thoughts.append(thinking_content)
+            
             next_action = parsed.get("next_action", "").lower()
             updated_action_history = action_history.copy()
 
@@ -465,19 +517,40 @@ def thinking_node(state):
             if next_action == "retrieve more info":
                 updated_action_history.append("retrieve")
                 queries = parsed.get("queries", [])
-                print(f"📖 Checking Books for: {queries}")
-                return {"next_action": "retrieve_more_info", "queries_for_retrieval": queries, "action_history": updated_action_history}
+                search_context = parsed.get("search_context", "")
+                # print(f"📖 Checking Books for: {queries}")
+                # print(f"🎯 Search context: {search_context}")
+                return {
+                    "next_action": "retrieve_more_info", 
+                    "queries_for_retrieval": queries, 
+                    "action_history": updated_action_history,
+                    "search_context": search_context,
+                    "intermediate_thoughts": intermediate_thoughts
+                }
             elif next_action == "search web":
                 tavily_query = parsed.get("tavily_query", "")
+                search_context = parsed.get("search_context", "")
                 updated_action_history.append("web_search")
-                print(f"🌐 Searching Web for: {tavily_query}")
-                return {"next_action": "search_web", "tavily_query": tavily_query, "action_history": updated_action_history}
+                # print(f"🌐 Searching Web for: {tavily_query}")
+                # print(f"🎯 Search context: {search_context}")
+                return {
+                    "next_action": "search_web", 
+                    "tavily_query": tavily_query, 
+                    "action_history": updated_action_history,
+                    "search_context": search_context,
+                    "intermediate_thoughts": intermediate_thoughts
+                }
             elif "continue conversation" in next_action:
                 response_text = parsed.get("response", "")
                 updated_action_history.append("continue_conversation")
                 ai_response = state.get("ai_response", [])
                 ai_response.append(response_text)
-                return {"next_action": "user_interaction", "ai_response": ai_response, "action_history": updated_action_history}
+                return {
+                    "next_action": "user_interaction", 
+                    "ai_response": ai_response, 
+                    "action_history": updated_action_history,
+                    "intermediate_thoughts": intermediate_thoughts
+                }
                     
         
         except Exception as e:
@@ -532,9 +605,13 @@ def user_interaction_node(state):
 
 def retrieval_tool(state):
     queries = state.get("queries_for_retrieval", [])
+    search_context = state.get("search_context", "")
     print("🔧 Retrieving more information for queries: ", queries)
+    if search_context:
+        print("🎯 Search context: ", search_context)
+    
     if not retriever or not queries:
-        return {"next_action": "process_new_docs"}
+        return {"next_action": "relevancy_check"}
     
     existing_docs = state.get("retrieved_docs", [])
     seen_doc_ids = set(
@@ -558,10 +635,11 @@ def retrieval_tool(state):
     print(f"📊 Added {len(new_docs)} new documents. Total: {len(all_docs)} documents.")
     
     return {
-        "next_action": "process_new_docs", 
+        "next_action": "relevancy_check", 
         "retrieved_docs": all_docs, 
         "retrieval_count": retrieval_count,
-        "new_docs_count": len(new_docs)
+        # Keep search_context for relevancy check
+        "search_context": search_context
     }
 
 def process_new_docs_node(state):
@@ -641,16 +719,21 @@ def process_new_docs_node(state):
 def tavily_search_tool(state):
     """Search web using Tavily for veterinary information"""
     query = state.get("tavily_query", "")
+    search_context = state.get("search_context", "")
     
     if not query:
-        return {"next_action": None}
+        return {"next_action": "relevancy_check"}
+    
+    print(f"🌐 Searching web for: {query}")
+    if search_context:
+        print(f"🎯 Search context: {search_context}")
     
     try:
         # Initialize Tavily client using environment variable
         api_key = os.getenv("TAVILY_API_KEY")
         if not api_key:
             print("⚠️ TAVILY_API_KEY not found in environment variables")
-            return {"next_action": None}
+            return {"next_action": "relevancy_check"}
         
         tavily_client = TavilyClient(api_key=api_key)
         
@@ -724,17 +807,19 @@ def tavily_search_tool(state):
             
             print(f"📚 Found {len(processed_results)} web search results for: {query}")
             return {
-                "next_action": None, 
+                "next_action": "relevancy_check", 
                 "web_search_results": existing_results,
-                "web_search_results_log": existing_log
+                "web_search_results_log": existing_log,
+                # Keep search_context for relevancy check
+                "search_context": search_context
             }
         else:
             print(f"⚠️ No web search results found for: {query}")
-            return {"next_action": None}
+            return {"next_action": "relevancy_check"}
             
     except Exception as e:
         print(f"⚠️ Error searching web: {e}")
-        return {"next_action": None}
+        return {"next_action": "relevancy_check"}
 
 def final_answer_node(state):
     final_answer = state["final_answer"]
@@ -753,7 +838,7 @@ def build_graph():
     builder.add_node("relevancy_check", relevancy_check_node)
     builder.add_node("thinking", thinking_node)
     builder.add_node("retrieval_tool", retrieval_tool)
-    builder.add_node("process_new_docs_node", process_new_docs_node)  # New node
+    # Remove process_new_docs_node
     builder.add_node("tavily_search_tool", tavily_search_tool)
     builder.add_node("user_interaction_node", user_interaction_node)
     builder.add_node("final_answer_node", final_answer_node)
@@ -819,40 +904,17 @@ def build_graph():
         }
     )
     
-    def retrieval_router(state):
-        action = state.get("next_action")
-        if action == "process_new_docs":
-            return "process_new_docs_node"
-        else:
-            return "thinking"
-    
-    builder.add_conditional_edges(
-        "retrieval_tool",
-        retrieval_router,
-        {
-            "process_new_docs_node": "process_new_docs_node",
-            "thinking": "thinking"
-        }
-    )
-    
-    builder.add_edge("process_new_docs_node", "thinking")
-    builder.add_edge("tavily_search_tool", "thinking")
+    # Direct edges from tools to relevancy check
+    builder.add_edge("retrieval_tool", "relevancy_check")
+    builder.add_edge("tavily_search_tool", "relevancy_check")
     builder.add_edge("final_answer_node", "user_interaction_node")
     
     graph = builder.compile(checkpointer=checkpointer)
     
-    # print("***************Graph built successfully! 🐾****************")
-    # from IPython.display import Image, display
-    # graph_image = graph.get_graph(xray=True).draw_mermaid_png()
-    # with open("graph_visualization.png", "wb") as f:
-    #     f.write(graph_image)
-    # print("Graph saved as graph_visualization.png")
-
-
     return graph
 
 def init_retriever():
-    persist_directory = '../../chroma/Cat_Owners_Home_Veterinary_Handbook'
+    persist_directory = '../chroma/Cat_Owners_Home_Veterinary_Handbook'
     id_key = "doc_id"
     text_embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
     open_clip_embeddings = OpenCLIPEmbeddings(model_name="ViT-g-14", checkpoint="laion2b_s34b_b88k")
