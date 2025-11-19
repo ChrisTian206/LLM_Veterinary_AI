@@ -11,12 +11,12 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
-from deep_agents_from_scratch.prompts import (
+from tools_and_prompts.prompts import (
     LS_DESCRIPTION,
     READ_FILE_DESCRIPTION,
     WRITE_FILE_DESCRIPTION,
 )
-from deep_agents_from_scratch.state import DeepAgentState
+from tools_and_prompts.state import DeepAgentState
 
 
 @tool(description=LS_DESCRIPTION)

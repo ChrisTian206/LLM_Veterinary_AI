@@ -12,8 +12,8 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
-from deep_agents_from_scratch.prompts import WRITE_TODOS_DESCRIPTION
-from deep_agents_from_scratch.state import DeepAgentState, Todo
+from tools_and_prompts.prompts import WRITE_TODOS_DESCRIPTION
+from tools_and_prompts.state import DeepAgentState, Todo
 
 
 @tool(description=WRITE_TODOS_DESCRIPTION,parse_docstring=True)
