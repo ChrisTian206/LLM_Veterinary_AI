@@ -55,7 +55,13 @@ def format_messages(messages):
         elif msg_type == "Ai":
             console.print(Panel(content, title="🤖 Assistant", border_style="green"))
         elif msg_type == "Tool":
-            console.print(Panel(content, title="🔧 Tool Output", border_style="yellow"))
+            # Extract tool name from the message if available
+            tool_name = getattr(m, 'name', None)
+            if tool_name:
+                title = f"🔧 Tool Output: {tool_name}"
+            else:
+                title = "🔧 Tool Output"
+            console.print(Panel(content, title=title, border_style="yellow"))
         else:
             console.print(Panel(content, title=f"📝 {msg_type}", border_style="white"))
 

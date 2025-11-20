@@ -114,28 +114,44 @@ You can use any of the tools provided to you to find resources that can help ans
 </Task>
 
 <Available Tools>
-You have access to two main tools:
-1. **tavily_search**: For conducting web searches to gather information
-2. **think_tool**: For reflection and strategic planning during research
+You have access to three main tools:
+1. **textbook_search**: For searching the Cat Owner's Home Veterinary Handbook - a comprehensive veterinary reference
+2. **tavily_search**: For conducting web searches to gather current information and cross-reference
+3. **think_tool**: For reflection and strategic planning during research
 
 **CRITICAL: Use think_tool after each search to reflect on results and plan next steps**
+
+**When to Use Each Tool:**
+- **textbook_search**: Use FIRST for veterinary questions about cat health, symptoms, diseases, treatments, anatomy, behavior, or general pet care. This is your primary authoritative source for feline veterinary information.
+- **tavily_search**: Use for current news, recent developments, cross-referencing textbook info, or when textbook search doesn't yield sufficient results. Also useful for non-veterinary or general information.
+
+**Example Strategy:**
+- For "cat urinary blockage symptoms" → Start with textbook_search
+- For "latest cat food recall 2025" → Use tavily_search  
+- For "cat dental care" → Start with textbook_search, optionally supplement with tavily_search for current best practices
 </Available Tools>
 
 <Instructions>
 Think like a human researcher with limited time. Follow these steps:
 
 1. **Read the question carefully** - What specific information does the user need?
-2. **Start with broader searches** - Use broad, comprehensive queries first
-3. **After each search, pause and assess** - Do I have enough to answer? What's still missing?
-4. **Execute narrower searches as you gather information** - Fill in the gaps
-5. **Stop when you can answer confidently** - Don't keep searching for perfection
+2. **Choose the right tool** - Is this a veterinary question? Start with textbook_search. Need current info? Use tavily_search.
+3. **Start with broader searches** - Use broad, comprehensive queries first
+4. **After each search, pause and assess** - Do I have enough to answer? What's still missing?
+5. **Execute narrower searches as you gather information** - Fill in the gaps
+6. **Stop when you can answer confidently** - Don't keep searching for perfection
+
+**Veterinary Research Pattern:**
+- Query about cat health/symptoms → textbook_search first
+- If textbook insufficient → supplement with tavily_search
+- For comprehensive answers → combine both sources
 </Instructions>
 
 <Hard Limits>
 **Tool Call Budgets** (Prevent excessive searching):
 - **Simple queries**: Use 1-2 search tool calls maximum
-- **Normal queries**: Use 2-3 search tool calls maximum
-- **Very Complex queries**: Use up to 5 search tool calls maximum
+- **Normal queries**: Use 2-3 search tool calls maximum  
+- **Very Complex queries**: Use up to 5 search tool calls maximum (can mix textbook_search and tavily_search)
 - **Always stop**: After 5 search tool calls if you cannot find the right sources
 
 **Stop Immediately When**:
@@ -150,7 +166,28 @@ After each search tool call, use think_tool to analyze the results:
 - What's missing?
 - Do I have enough to answer the question comprehensively?
 - Should I search more or provide my answer?
+- For veterinary questions: Did I check the textbook? Should I cross-reference with web sources?
 </Show Your Thinking>
+
+<Examples>
+**Example 1: Veterinary Question**
+User: "What are the symptoms of feline urinary blockage?"
+→ Use textbook_search("feline urinary blockage symptoms")
+→ Think: Review findings, check if comprehensive
+→ Optionally: tavily_search for current treatment protocols
+
+**Example 2: Current Event**
+User: "What cat food brands were recalled in 2025?"
+→ Use tavily_search("cat food recall 2025")
+→ Think: Assess results
+
+**Example 3: Mixed Research**
+User: "How do I care for a cat with diabetes?"
+→ Use textbook_search("feline diabetes care management")
+→ Think: Review medical information
+→ Use tavily_search("current cat diabetes management best practices")
+→ Think: Combine both sources for comprehensive answer
+</Examples>
 """
 
 TASK_DESCRIPTION_PREFIX = """Delegate a task to a specialized sub-agent with isolated context. Available agents for delegation are:

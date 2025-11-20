@@ -1,0 +1,31 @@
+# React Agent Requirements
+# Core dependencies for pawsitive_v2_ReAct
+
+# LangChain & LangGraph
+langchain-core
+langchain-ollama
+langchain-chroma
+langchain-huggingface
+langgraph
+
+# Vector Database & Embeddings
+chromadb
+sentence-transformers
+
+# Web Search & HTTP
+tavily-python
+httpx
+markdownify
+
+# Data Handling & Utilities
+pydantic
+typing-extensions
+python-dotenv
+
+# Display & Formatting
+rich
+ipython
+
+# Jupyter Notebook Support
+jupyter
+notebook

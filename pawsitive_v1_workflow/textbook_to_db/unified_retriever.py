@@ -3,7 +3,7 @@ class UnifiedRetriever:
     UnifiedRetriever supports multi-modal retrieval from separate text and image vectorstores and docstores.
     It can retrieve by text, image, or both (multi-query), and supports metadata filtering by modality.
     """
-    def __init__(self, text_vectorstore, text_docstore, image_vectorstore, image_docstore, id_key="doc_id"):
+    def __init__(self, text_vectorstore, text_docstore, image_vectorstore=None, image_docstore=None, id_key="doc_id"):
         self.text_vectorstore = text_vectorstore
         self.text_docstore = text_docstore
         self.image_vectorstore = image_vectorstore
@@ -18,7 +18,9 @@ class UnifiedRetriever:
         # Text search
         text_results = self.text_vectorstore.similarity_search_with_score(query, k=k, filter=filter)
         # Image search
-        image_results = self.image_vectorstore.similarity_search_with_score(query, k=k, filter=filter)
+        image_results = []
+        if self.image_vectorstore:
+            image_results = self.image_vectorstore.similarity_search_with_score(query, k=k, filter=filter)
         output = []
         # Process text results
         for doc, score in text_results:
@@ -70,7 +72,9 @@ class UnifiedRetriever:
         # Textual modalities
         text_results = self.text_vectorstore.similarity_search(query, k=k, filter={"type": {"$in": list(text_types)}})
         # Image modalities
-        image_results = self.image_vectorstore.similarity_search(query, k=k, filter={"type": {"$in": list(image_types)}})
+        image_results = []
+        if self.image_vectorstore:
+            image_results = self.image_vectorstore.similarity_search(query, k=k, filter={"type": {"$in": list(image_types)}})
         all_results = []
         for doc in text_results:
             doc_id = doc.metadata.get(self.id_key)
