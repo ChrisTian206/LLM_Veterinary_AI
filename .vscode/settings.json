@@ -1,0 +1,5 @@
+{
+    "python.analysis.extraPaths": [
+        "./pawsitive_v1_workflow/textbook_to_db"
+    ]
+}
