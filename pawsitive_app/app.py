@@ -53,6 +53,15 @@ st.markdown("""
     .stButton button {
         width: 100%;
     }
+    @keyframes blink {
+        0%, 20% { content: '.'; }
+        40% { content: '..'; }
+        60%, 100% { content: '...'; }
+    }
+    .thinking-animation::after {
+        content: '.';
+        animation: blink 1.5s infinite;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -73,6 +82,12 @@ if "is_processing" not in st.session_state:
 
 if "selected_file" not in st.session_state:
     st.session_state.selected_file = None
+
+if "stop_requested" not in st.session_state:
+    st.session_state.stop_requested = False
+
+if "processing_placeholders" not in st.session_state:
+    st.session_state.processing_placeholders = None
 
 # Sidebar
 with st.sidebar:
@@ -313,35 +328,56 @@ with chat_container:
                 with st.chat_message("assistant", avatar="🔧"):
                     with st.expander("Tool Output", expanded=False):
                         st.markdown(content)
+    
+    # Create a placeholder for processing status - this stays in chat container
+    processing_status = st.empty()
 
-# Chat input
-user_input = st.chat_input(
-    "Ask me anything about veterinary care...",
-    disabled=st.session_state.is_processing
-)
+# Chat input and stop button
+col1, col2 = st.columns([6, 1])
+
+with col1:
+    user_input = st.chat_input(
+        "Ask me anything about veterinary care...",
+        disabled=st.session_state.is_processing,
+        key="chat_input"
+    )
+
+with col2:
+    if st.session_state.is_processing:
+        if st.button("⏹️ Stop", key="stop_button", use_container_width=True, type="primary"):
+            st.session_state.stop_requested = True
+            st.warning("⚠️ Stop requested - agent will stop at next checkpoint...")
 
 if user_input:
-    # Set processing flag
+    # Set processing flag and reset stop flag
     st.session_state.is_processing = True
+    st.session_state.stop_requested = False
     
-    # Display user message immediately
-    with st.chat_message("user", avatar="👤"):
-        st.markdown(user_input)
-    
-    # Create status placeholder
-    status_placeholder = st.empty()
-    status_placeholder.info("🤔 Thinking...")
+    # Display user message immediately in the chat container
+    with chat_container:
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(user_input)
     
     full_response = ""
     tools_used = []
     files_created = []
     
     try:
+        # Show initial thinking status with animated dots (below the user message)
+        with processing_status.container():
+            st.markdown('<div style="padding: 1rem; background-color: #e3f2fd; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;">🤔 <span class="thinking-animation">Thinking</span></span></div>', unsafe_allow_html=True)
+        
         # Stream agent response with updates mode
         for chunk in st.session_state.agent_manager.stream(
             user_input,
             thread_id=st.session_state.current_thread
         ):
+            # Check if stop was requested
+            if st.session_state.stop_requested:
+                with processing_status.container():
+                    st.warning("⏹️ Stopped by user")
+                break
+            
             # chunk is a dict with node name as key
             for node_name, node_output in chunk.items():
                 if "messages" in node_output:
@@ -377,7 +413,9 @@ if user_input:
                                 else:
                                     current_status = f"🔧 Using tool: {', '.join(tool_names)}"
                                 
-                                status_placeholder.info(current_status)
+                                # Update status with animated dots
+                                with processing_status.container():
+                                    st.markdown(f'<div style="padding: 1rem; background-color: #e3f2fd; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;"><span class="thinking-animation">{current_status}</span></span></div>', unsafe_allow_html=True)
                             
                             elif last_msg.type == "tool":
                                 # Tool just returned results
@@ -399,49 +437,54 @@ if user_input:
                                 else:
                                     current_status = f"✅ {tool_name} complete - processing..."
                                 
-                                status_placeholder.info(current_status)
+                                # Update status with animated dots
+                                with processing_status.container():
+                                    st.markdown(f'<div style="padding: 1rem; background-color: #e3f2fd; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;"><span class="thinking-animation">{current_status}</span></span></div>', unsafe_allow_html=True)
                             
                             elif last_msg.type == "ai" and hasattr(last_msg, "content") and last_msg.content:
                                 # AI response with content - capture it
                                 full_response = last_msg.content
         
-        # Clear status and show final response
-        status_placeholder.empty()
+        # Clear processing status
+        processing_status.empty()
         
+        # Display the agent's response immediately (before rerun)
         if full_response:
-            # Show final AI response
-            with st.chat_message("assistant", avatar="🐾"):
-                st.markdown(full_response)
-                
-                # Show tools used summary
-                if tools_used or files_created:
-                    with st.expander("🔍 Research Details", expanded=False):
-                        if tools_used:
-                            st.write("**🔧 Tools Used:**")
-                            tool_icons = {
-                                "textbook_search": "📚",
-                                "tavily_search": "🌐",
-                                "think_tool": "💭",
-                                "task": "📋",
-                                "write_file": "📝",
-                                "read_file": "📖",
-                                "write_todos": "✅",
-                            }
-                            for tool in tools_used:
-                                icon = tool_icons.get(tool, "🔧")
-                                st.text(f"  {icon} {tool}")
-                        
-                        if files_created:
-                            st.write(f"\n**📄 Files Created:** {len(set(files_created))}")
-                            for f in set(files_created):
-                                st.text(f"  • {f}")
+            with chat_container:
+                with st.chat_message("assistant", avatar="🐾"):
+                    st.markdown(full_response)
+                    
+                    # Show tools used summary
+                    if tools_used or files_created:
+                        with st.expander("🔍 Research Details", expanded=False):
+                            if tools_used:
+                                st.write("**🔧 Tools Used:**")
+                                tool_icons = {
+                                    "textbook_search": "📚",
+                                    "tavily_search": "🌐",
+                                    "think_tool": "💭",
+                                    "task": "📋",
+                                    "write_file": "📝",
+                                    "read_file": "📖",
+                                    "write_todos": "✅",
+                                }
+                                for tool in tools_used:
+                                    icon = tool_icons.get(tool, "🔧")
+                                    st.text(f"  {icon} {tool}")
+                            
+                            if files_created:
+                                st.write(f"\n**📄 Files Created:** {len(set(files_created))}")
+                                for f in set(files_created):
+                                    st.text(f"  • {f}")
         else:
-            with st.chat_message("assistant", avatar="🐾"):
-                st.warning("No response generated. Please try again.")
+            with chat_container:
+                with st.chat_message("assistant", avatar="🐾"):
+                    st.warning("No response generated. Please try again.")
         
     except Exception as e:
-        status_placeholder.empty()
-        with st.chat_message("assistant", avatar="🐾"):
+        processing_status.empty()
+        # Show error in processing status area
+        with processing_status.container():
             st.error(f"❌ Error: {str(e)}")
             import traceback
             with st.expander("🔍 Debug Info - Click to expand"):
@@ -450,8 +493,9 @@ if user_input:
                 st.write("User Input:", user_input)
     
     finally:
-        # Always reset processing flag
+        # Always reset processing flag and stop flag
         st.session_state.is_processing = False
+        st.session_state.stop_requested = False
     
     # Rerun to update UI and load fresh messages from agent state
     st.rerun()
