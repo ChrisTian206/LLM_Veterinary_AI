@@ -12,13 +12,13 @@ An AI-powered veterinary assistant for cat owners that combines multimodal under
 
 Built on the authoritative "Cat Owner's Home Veterinary Handbook" by Debra M. Eldredge and supplemented with emergency care, nutrition, and parasite resources.
 
-## 🤖 Ollama Models Used
+## 🤖 Models & Embeddings
 
-- **`mistral:instruct`** - Primary reasoning and conversation model
-- **`qwen3:8b`** - Advanced decision-making and complex reasoning  
+**Language Models (Ollama):**
+- **`qwen3:8b`** - Primary reasoning and conversation model
+- **`llama3.2:3b`** - Fast summarization model
 - **`minicpm-v:8b`** - Vision model for analyzing cat photos
-- **`BAAI/bge-small-en-v1.5`** - Text embeddings for document search
-- **`ViT-g-14` (OpenCLIP)** - Image embeddings for visual search
+
 
 ## 📁 Folder Structure
 
@@ -46,77 +46,76 @@ LLM_Veterinary_AI/
 └── 📋 requirements.txt, nb.ipynb, README.md
 ```
 
-## 🚀 Quick Start
+## 🚀 Getting Started
 
+This repository contains multiple implementations of veterinary AI assistants:
 
-### Setup
+### 🐾 **Pawsitive App** (Recommended)
+Interactive Streamlit application with dual-collection retrieval and multi-query augmentation.
 
-1. **Install dependencies**
-   ```bash
-   git clone https://github.com/ChrisTian206/LLM_Veterinary_AI.git
-   cd LLM_Veterinary_AI
-   pip install -r requirements.txt
-   ```
+**→ See [`pawsitive_app/README.md`](pawsitive_app/README.md) for setup and usage**
 
-2. **Install Ollama models**
-   ```bash
-   ollama pull mistral:instruct
-   ollama pull qwen3:8b
-   ollama pull minicpm-v:8b
-   ```
+Features:
+- 💬 Multi-turn conversations with persistent memory
+- 📚 Dual-collection retrieval (optimized text/tables + images)
+- 🔍 Multi-query augmentation for better coverage
+- 🌐 Web search integration (Tavily)
+- 📝 Context offloading via file management
 
-### Usage
+### 🧠 **Pawsitive V1 Workflow**
+Legacy LangGraph-based workflow with multimodal understanding.
 
-1. **First: Load the textbooks** (required before running the graph)
-   ```bash
-   cd textbook_to_db
-   jupyter notebook ingestion.ipynb
-   # Execute all cells to build the knowledge base (~15-30 minutes)
-   ```
+**→ See `pawsitive_v1_workflow/` for the original LangGraph implementation**
 
-2. **Then: Run the veterinary assistant**
-   ```bash
-   cd ../langgraph
-   python langgraph_flow.py
-   ```
+### 🔬 **Pawsitive V2 ReAct**
+Experimental ReAct agent with enhanced reasoning capabilities.
 
-3. **Chat with the AI**
-   - Enter your cat health questions
-   - Optionally provide image paths for visual analysis
-   - Type `/bye` to exit
+**→ See `pawsitive_v2_ReAct/` for research and development experiments**
 
 ## 🔧 Technology Stack
 
-- **LangGraph** - Workflow orchestration and reasoning
-- **ChromaDB** - Vector database for multimodal search
+- **LangGraph** - ReAct agent workflow orchestration
+- **Streamlit** - Interactive web interface
+- **ChromaDB** - Dual-collection vector database (optimized text/tables + images)
 - **Ollama** - Local LLM inference
-- **OpenCLIP** - Multimodal embeddings
-- **Unstructured** - PDF parsing and extraction
+- **HuggingFace Transformers** - Embedding models (BAAI, Qwen)
+- **Tavily** - Web search API for current information
+- **SQLite** - Persistent conversation memory
 
-## 💡 Example Usage
+## 💡 Key Features
 
-```bash
-# User input
-"My cat has been scratching its ear a lot and shaking its head"
+### Dual-Collection Retrieval System
 
-# Optional: Provide image
-"path/to/cat_ear_photo.jpg"
+Uses **two optimized vector databases** for better accuracy:
 
-# AI Process:
-1. Analyzes image (if provided) → describes visible symptoms
-2. Refines query → "cat ear scratching head shaking possible infection"
-3. Searches knowledge base → finds relevant ear condition info
-4. Asks clarifying questions → "Is there any discharge or odor?"
-5. Provides guidance → step-by-step care instructions
-```
+- **Trimmed Collection** (Qwen embeddings, 1024 dims) - Text and tables with higher clinical accuracy
+- **Original Collection** (BAAI embeddings, 384 dims) - Image summaries and visual descriptions
+
+### Multi-Query Augmentation
+
+Generates 2-3 query variations per search to improve retrieval coverage and find relevant information from multiple perspectives.
+
+## 🏗️ High-Level Architecture
+
+The system combines local LLM inference (Ollama) with dual-collection vector databases (ChromaDB) for accurate veterinary information retrieval. The ReAct agent orchestrates multiple tools including textbook search, web search, and file management to provide comprehensive responses.
+
+**→ See individual folders for detailed architecture and implementation**
 
 ## 📝 Important Notes
 
 - **🏥 Not a replacement** for professional veterinary care
-- **🔒 Privacy-focused** - All processing happens locally
+- **🔒 Privacy-focused** - LLM runs locally via Ollama
 - **⚠️ Emergency disclaimer** - For serious conditions, consult a veterinarian immediately
-- **🔄 Re-run ingestion** when adding new PDFs to the knowledge base
+- **� Knowledge base** - Based on "Cat Owner's Home Veterinary Handbook" + specialized resources
+- **🔄 Continuous improvement** - Multi-query retrieval improves coverage over time
+
+## 📚 Documentation
+
+- **Main App**: See `pawsitive_app/README.md` for detailed setup
+- **Retrieval System**: See `unified_retriever.py` for dual-collection implementation
+- **Agent Tools**: See `pawsitive_app/tools_and_prompts/` for tool definitions
+- **Legacy Workflows**: See `pawsitive_v1_workflow/` and `pawsitive_v2_ReAct/`
 
 ---
 
-**📧 Questions?** Check the detailed documentation in `langgraph/` and `textbook_to_db/` folders.
+**📧 Questions?** Open an issue or check the documentation in each folder.
