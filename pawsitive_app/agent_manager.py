@@ -40,6 +40,7 @@ from tools_and_prompts.prompts import (
     TODO_USAGE_INSTRUCTIONS,
     SUMMARIZE_WEB_SEARCH,
 )
+import config
 
 
 class AgentManager:
@@ -86,24 +87,45 @@ class AgentManager:
         )
         
     def _init_retriever(self):
-        """Initialize textbook retriever with Chroma."""
-        text_embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+        """Initialize textbook retriever with dual Chroma collections using different embeddings."""
+        # Original collection embeddings (384 dimensions)
+        original_embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
         
+        # Trimmed collection embeddings (1024 dimensions)
+        trimmed_embeddings = HuggingFaceEmbeddings(model_name="Qwen/Qwen3-Embedding-0.6B")
+        
+        # Original collection (for images) - uses BAAI embeddings
         text_vectorstore = Chroma(
             collection_name="text_summaries_and_tables_and_image_summaries",
-            embedding_function=text_embeddings,
+            embedding_function=original_embeddings,
             persist_directory=self.chroma_directory
         )
         
         text_docstore = Chroma(
             collection_name="text_originals",
-            embedding_function=text_embeddings,
+            embedding_function=original_embeddings,
             persist_directory=self.chroma_directory
         )
         
+        # New trimmed collection (for text and tables) - uses Qwen embeddings
+        trimmed_dir = getattr(config, 'CHROMA_DIRECTORY_TRIMMED', self.chroma_directory)
+        text_table_vectorstore = Chroma(
+            collection_name="text_summaries_and_tables",  # Correct collection name for trimmed DB
+            embedding_function=trimmed_embeddings,
+            persist_directory=trimmed_dir
+        )
+        
+        text_table_docstore = Chroma(
+            collection_name="text_originals",
+            embedding_function=trimmed_embeddings,
+            persist_directory=trimmed_dir
+        )
+        
         self.retriever = UnifiedRetriever(
-            text_vectorstore,
-            text_docstore,
+            text_vectorstore=text_vectorstore,  # Original (for images)
+            text_docstore=text_docstore,
+            text_table_vectorstore=text_table_vectorstore,  # Trimmed (for text/tables)
+            text_table_docstore=text_table_docstore,
             id_key="doc_id"
         )
         
@@ -128,19 +150,35 @@ class AgentManager:
             """Search veterinary textbook and save detailed results to files.
 
             Searches the Cat Owner's Home Veterinary Handbook database for relevant
-            information. Saves full textbook content to files for context offloading.
-            Returns only essential information to help the agent decide on next steps.
+            information using multi-query augmentation for better coverage.
+            Uses optimized collections: trimmed collection for text/tables (better accuracy),
+            original collection for images. Saves full textbook content to files for 
+            context offloading. Returns only essential information to help the agent 
+            decide on next steps.
 
             Args:
                 query: Search query to execute on the textbook database
                 state: Injected agent state for file storage
                 tool_call_id: Injected tool call identifier
-                k: Number of results to retrieve (default: 3)
+                k: Number of results to retrieve per query (default: 3)
 
             Returns:
                 Command that saves full results to files and provides minimal summary
             """
-            results = self.retriever.retrieve_multi_modal(query, k=k)
+            # Generate multiple query variations for better retrieval
+            enable_multi_query = getattr(config, 'ENABLE_MULTI_QUERY_TEXTBOOK', True)
+            
+            if enable_multi_query:
+                # Generate query variations using LLM
+                num_queries = getattr(config, 'NUM_TEXTBOOK_QUERIES', 3)
+                query_variations = self._generate_query_variations(query, num_queries)
+                results = self.retriever.retrieve_multi_query_augmented(
+                    queries=query_variations, 
+                    k=k
+                )
+            else:
+                # Single query mode (fallback)
+                results = self.retriever.retrieve_multi_modal(query, k=k)
             
             files = state.get("files", {})
             saved_files = []
@@ -151,9 +189,12 @@ class AgentManager:
                 doc_id = doc.get('doc_id', 'unknown')
                 summary = doc.get('summary', '')
                 
-                # Fetch full original text from docstore
+                # Get the correct docstore for this document (from dual-collection setup)
+                docstore = doc.get('docstore', self.retriever.text_table_docstore)
+                
+                # Fetch full original text from appropriate docstore
                 try:
-                    original = self.retriever.text_docstore._collection.get(
+                    original = docstore._collection.get(
                         ids=[doc_id],
                         include=["documents", "metadatas"]
                     )
@@ -190,12 +231,15 @@ class AgentManager:
                 summary_preview = summary[:100] + "..." if len(summary) > 100 else summary
                 summaries.append(f"- {filename}: [{modality}] {summary_preview}")
             
-            summary_text = f"""📚 Found {len(results)} textbook result(s) for '{query}':
+            # Build summary message
+            multi_query_note = " (using multi-query augmentation)" if enable_multi_query else ""
+            summary_text = f"""📚 Found {len(results)} textbook result(s) for '{query}'{multi_query_note}:
 
 {chr(10).join(summaries)}
 
 Files: {', '.join(saved_files)}
-💡 Use read_file() to access full textbook content when needed."""
+💡 Use read_file() to access full textbook content when needed.
+🔍 Search used optimized collections: trimmed DB for text/tables (better accuracy), original DB for images."""
 
             return Command(
                 update={
@@ -380,6 +424,46 @@ Files: {', '.join(saved_files)}
     def _get_today_str(self) -> str:
         """Get current date in human-readable format."""
         return datetime.now().strftime("%a %b %-d, %Y")
+    
+    def _generate_query_variations(self, original_query: str, num_queries: int = 3) -> list[str]:
+        """Generate query variations for multi-query retrieval.
+        
+        Creates semantically similar query variations to improve retrieval coverage
+        by rephrasing the original query in different ways.
+        
+        Args:
+            original_query: The original search query
+            num_queries: Number of query variations to generate (including original)
+            
+        Returns:
+            List of query strings including the original
+        """
+        if num_queries <= 1:
+            return [original_query]
+        
+        # Use LLM to generate query variations
+        prompt = f"""You are a veterinary search expert. Given a veterinary search query, generate {num_queries - 1} alternative phrasings that would help retrieve relevant information from a veterinary textbook.
+
+Original query: "{original_query}"
+
+Generate {num_queries - 1} alternative queries that:
+1. Use different medical terminology (e.g., "feline" vs "cat")
+2. Rephrase as questions or statements
+3. Focus on related symptoms, treatments, or conditions
+4. Keep the core meaning but vary the wording
+
+Output ONLY the alternative queries, one per line, no numbering or explanations."""
+
+        try:
+            response = self.model.invoke([HumanMessage(content=prompt)])
+            variations = [line.strip() for line in response.content.strip().split('\n') if line.strip()]
+            # Add original query at the beginning
+            all_queries = [original_query] + variations[:num_queries - 1]
+            return all_queries[:num_queries]  # Ensure we don't exceed requested number
+        except Exception as e:
+            # Fallback: just use the original query
+            print(f"Warning: Could not generate query variations: {e}")
+            return [original_query]
     
     def _run_tavily_search(
         self,

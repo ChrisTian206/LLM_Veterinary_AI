@@ -14,9 +14,19 @@ SUMMARIZATION_MODEL = "ollama:llama3.2:3b"
 MODEL_TEMPERATURE = 0.5
 
 # Retriever Configuration
+# Original collection (for images)
 CHROMA_DIRECTORY = str(PROJECT_ROOT.parent / "chroma" / "Cat_Owners_Home_Veterinary_Handbook")
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"  # 384 dimensions
+
+# New trimmed collection (for text and tables - better accuracy)
+CHROMA_DIRECTORY_TRIMMED = str(PROJECT_ROOT.parent / "chroma" / "TO_Cat_Owners_Home_Veterinary_Handbook_Trimed")
+EMBEDDING_MODEL_TRIMMED = "Qwen/Qwen3-Embedding-0.6B"  # 1024 dimensions
+
 ID_KEY = "doc_id"
+
+# Multi-Query Configuration
+ENABLE_MULTI_QUERY_TEXTBOOK = True
+NUM_TEXTBOOK_QUERIES = 3  # Number of query variations to generate
 
 # Agent Configuration
 MAX_CONCURRENT_RESEARCH_UNITS = 3

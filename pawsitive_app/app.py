@@ -165,26 +165,43 @@ with st.sidebar:
         
         # Files - make them clickable
         files = state.values.get("files", {})
-        if files:
-            with st.expander(f"📁 Files ({len(files)})", expanded=False):
-                for filename in files.keys():
-                    if st.button(f"📄 {filename}", key=f"file_{filename}"):
+        if files and len(files) > 0:
+            with st.expander(f"📁 Files ({len(files)})", expanded=True):
+                for filename in sorted(files.keys()):
+                    # Add modality icons
+                    if "text_" in filename:
+                        icon = "📝"
+                    elif "image_" in filename:
+                        icon = "🖼️"
+                    elif "table_" in filename:
+                        icon = "📊"
+                    else:
+                        icon = "📄"
+                    
+                    if st.button(f"{icon} {filename}", key=f"file_{filename}"):
                         st.session_state.selected_file = filename
         else:
             st.text("📁 Files: None yet")
         
         # Todos
         todos = state.values.get("todos", [])
-        if todos:
-            with st.expander(f"✅ TODOs ({len(todos)})", expanded=False):
+        if todos and len(todos) > 0:
+            with st.expander(f"✅ TODOs ({len(todos)})", expanded=True):
                 for todo in todos:
                     status_icons = {
                         "pending": "⏳",
                         "in_progress": "🔄",
-                        "completed": "✅"
+                        "completed": "✅",
+                        "not-started": "⏳",  # Alternative naming
+                        "in-progress": "🔄"   # Alternative naming
                     }
-                    status_icon = status_icons.get(todo.get("status"), "❓")
-                    content = todo.get('content', 'No description')
+                    # Handle both dict and TypedDict formats
+                    if isinstance(todo, dict):
+                        status_icon = status_icons.get(todo.get("status", "pending"), "❓")
+                        content = todo.get('content', todo.get('description', 'No description'))
+                    else:
+                        status_icon = "❓"
+                        content = str(todo)
                     st.text(f"{status_icon} {content}")
         else:
             st.text("✅ TODOs: None")
@@ -206,6 +223,20 @@ with st.sidebar:
         disabled=st.session_state.is_processing,
         help="Disable during processing to avoid interruptions"
     )
+    
+    # Debug info (collapsible)
+    if st.checkbox("🔍 Debug Info", value=False):
+        try:
+            state = st.session_state.agent_manager.get_state(st.session_state.current_thread)
+            st.json({
+                "files_count": len(state.values.get("files", {})),
+                "todos_count": len(state.values.get("todos", [])),
+                "messages_count": len(state.values.get("messages", [])),
+                "file_names": list(state.values.get("files", {}).keys())[:5],  # First 5
+                "todos_preview": state.values.get("todos", [])[:3] if state.values.get("todos") else []
+            })
+        except Exception as e:
+            st.error(f"Debug error: {e}")
     
     # Info
     st.markdown("---")
@@ -316,6 +347,10 @@ with chat_container:
             role = msg["role"]
             content = msg["content"]
             
+            # Skip empty messages
+            if not content or (isinstance(content, str) and not content.strip()):
+                continue
+            
             if role == "user":
                 with st.chat_message("user", avatar="👤"):
                     st.markdown(content)
@@ -365,7 +400,7 @@ if user_input:
     try:
         # Show initial thinking status with animated dots (below the user message)
         with processing_status.container():
-            st.markdown('<div style="padding: 1rem; background-color: #e3f2fd; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;">🤔 <span class="thinking-animation">Thinking</span></span></div>', unsafe_allow_html=True)
+            st.markdown('<div style="padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;">🤔 <span class="thinking-animation">Thinking</span></span></div>', unsafe_allow_html=True)
         
         # Stream agent response with updates mode
         for chunk in st.session_state.agent_manager.stream(
@@ -415,7 +450,7 @@ if user_input:
                                 
                                 # Update status with animated dots
                                 with processing_status.container():
-                                    st.markdown(f'<div style="padding: 1rem; background-color: #e3f2fd; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;"><span class="thinking-animation">{current_status}</span></span></div>', unsafe_allow_html=True)
+                                    st.markdown(f'<div style="padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;"><span class="thinking-animation">{current_status}</span></span></div>', unsafe_allow_html=True)
                             
                             elif last_msg.type == "tool":
                                 # Tool just returned results
@@ -439,7 +474,7 @@ if user_input:
                                 
                                 # Update status with animated dots
                                 with processing_status.container():
-                                    st.markdown(f'<div style="padding: 1rem; background-color: #e3f2fd; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;"><span class="thinking-animation">{current_status}</span></span></div>', unsafe_allow_html=True)
+                                    st.markdown(f'<div style="padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;"><span style="font-size: 1.1rem;"><span class="thinking-animation">{current_status}</span></span></div>', unsafe_allow_html=True)
                             
                             elif last_msg.type == "ai" and hasattr(last_msg, "content") and last_msg.content:
                                 # AI response with content - capture it

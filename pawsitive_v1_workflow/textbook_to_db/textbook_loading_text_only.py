@@ -181,7 +181,7 @@ def summarize_texts(texts):
     semantic_chunks = semantic_chunk_texts(texts)
     print(f"Created {len(semantic_chunks)} semantic chunks from {len(texts)} text elements")
     
-    model = ChatOllama(model="llama3.1:8b", timeout=120)
+    model = ChatOllama(model="llama3.2:3b")
     prompt_text_summary = (
         "You are an assistant tasked with concisely summarizing text sections related to veterinary advice and pet care. "
         "Focus on key information, main ideas, and any actionable advice. Just give me the summary, be concise and do not be verbose. Text chunk: {element} "
@@ -189,8 +189,8 @@ def summarize_texts(texts):
     prompt_text = ChatPromptTemplate.from_template(prompt_text_summary)
     text_summarize_chain = {"element": lambda x: x} | prompt_text | model | StrOutputParser()
     
-    print(f"Summarizing {len(semantic_chunks)} chunks with Ollama (concurrency=2)...")
-    return text_summarize_chain.batch(semantic_chunks, {"max_concurrency": 2})
+    print(f"Summarizing {len(semantic_chunks)} chunks with Ollama (concurrency=8)...")
+    return text_summarize_chain.batch(semantic_chunks, {"max_concurrency": 8})
 
 def summarize_tables(tables, raw_pdf_elements=None):
     """
@@ -204,7 +204,7 @@ def summarize_tables(tables, raw_pdf_elements=None):
     if raw_pdf_elements is not None and tables and hasattr(tables[0], 'context'):
         enrich_table_context(tables, raw_pdf_elements, window_size=1)
     
-    model = ChatOllama(model="llama3.1:8b", timeout=120)
+    model = ChatOllama(model="llama3.2:3b")
     prompt_table_summary = (
         "You are an assistant tasked with extracting key information, trends, and important numerical data from the provided table, "
         "especially as it relates to veterinary topics, animal health, or clinical practice. Use the provided context to help interpret the table. "
@@ -224,8 +224,8 @@ def summarize_tables(tables, raw_pdf_elements=None):
         context = getattr(tbl, 'context', "")
         table_context_pairs.append({"element": tbl.text if hasattr(tbl, 'text') else tbl, "context": context})
     
-    print(f"Summarizing {len(table_context_pairs)} tables with Ollama (concurrency=2)...")
-    return table_summarize_chain.batch(table_context_pairs, {"max_concurrency": 2})
+    print(f"Summarizing {len(table_context_pairs)} tables with Ollama (concurrency=8)...")
+    return table_summarize_chain.batch(table_context_pairs, {"max_concurrency": 8})
 
 def summarize_elements(texts, tables, raw_pdf_elements=None):
     """
@@ -240,7 +240,7 @@ def summarize_elements(texts, tables, raw_pdf_elements=None):
     print("Texts and Tables Summary Done!")
     return text_summaries, table_summaries
 
-def store_in_chromadb(text_summaries, texts, table_summaries, tables, persist_directory="./chroma_db", batch_size=20):
+def store_in_chromadb(text_summaries, texts, table_summaries, tables, persist_directory="./chroma_db", batch_size=5):
     """
     Stores the summarized text and table data into ChromaDB vector stores on disk.
     - Text vectorstore/docstore: for text and table content, using a text embedding model.
@@ -251,9 +251,22 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, persist_di
     from langchain_chroma import Chroma
     from langchain_core.documents import Document
     import uuid, json
+    import gc
+    import torch
     from unified_retriever import UnifiedRetriever
 
-    text_embeddings = HuggingFaceEmbeddings(model_name="Qwen/Qwen3-Embedding-0.6B")
+    # Clear GPU memory before starting
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    gc.collect()
+    print("🧹 Cleared GPU memory before embedding")
+
+    # Use MPS (GPU) for embedding with aggressive memory management
+    text_embeddings = HuggingFaceEmbeddings(
+        model_name="Qwen/Qwen3-Embedding-0.6B",
+        model_kwargs={'device': 'mps'},  # Use Apple Silicon GPU
+        encode_kwargs={'batch_size': 4}  # Small internal batch size to reduce memory
+    )
 
     # Vectorstores and docstores
     text_vectorstore = Chroma(
@@ -287,6 +300,11 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, persist_di
             batch_ids = doc_ids[i:i+batch_size]
             text_vectorstore.add_documents(batch_docs, ids=batch_ids)
             print(f"  Processed batch {i//batch_size + 1}/{(len(summary_texts)-1)//batch_size + 1}")
+            
+            # Clear GPU memory after EVERY batch to prevent OOM
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            gc.collect()
         
         # Batch processing for originals
         print(f"Adding {len(original_text_docs)} original texts in batches of {batch_size}...")
@@ -295,6 +313,11 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, persist_di
             batch_ids = doc_ids[i:i+batch_size]
             text_docstore.add_documents(batch_docs, ids=batch_ids)
             print(f"  Processed batch {i//batch_size + 1}/{(len(original_text_docs)-1)//batch_size + 1}")
+            
+            # Clear GPU memory after EVERY batch to prevent OOM
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            gc.collect()
     
     # Store tables as JSON (summaries and originals) in batches
     if tables:
@@ -315,6 +338,11 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, persist_di
             batch_ids = table_ids[i:i+batch_size]
             text_vectorstore.add_documents(batch_docs, ids=batch_ids)
             print(f"  Processed batch {i//batch_size + 1}/{(len(summary_tables)-1)//batch_size + 1}")
+            
+            # Clear GPU memory after EVERY batch
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            gc.collect()
         
         # Batch processing for original tables
         print(f"Adding {len(original_table_docs)} original tables in batches of {batch_size}...")
@@ -323,6 +351,17 @@ def store_in_chromadb(text_summaries, texts, table_summaries, tables, persist_di
             batch_ids = table_ids[i:i+batch_size]
             text_docstore.add_documents(batch_docs, ids=batch_ids)
             print(f"  Processed batch {i//batch_size + 1}/{(len(original_table_docs)-1)//batch_size + 1}")
+            
+            # Clear GPU memory after EVERY batch
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            gc.collect()
+    
+    # Final aggressive cleanup
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    gc.collect()
+    print("✅ All documents stored successfully! GPU memory cleared.")
 
     return UnifiedRetriever(text_vectorstore, text_docstore, None, None, id_key)
 
